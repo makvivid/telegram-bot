@@ -4,7 +4,7 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import CommandStart, Text
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
-API_TOKEN = os.getenv("BOT_TOKEN")
+API_TOKEN = os.getenv("8582775517:AAFR-rlxtshfm7pgMmJ9ZlfznlkF-w8vdLc")
 ADMIN_ID = 488352806
 
 main_kb = ReplyKeyboardMarkup(
@@ -230,4 +230,5 @@ async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
+
     asyncio.run(main())
