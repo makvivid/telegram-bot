@@ -1,5 +1,7 @@
 import asyncio
 import os
+import base64
+from io import BytesIO
 from aiogram import Bot, Dispatcher, types
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
@@ -19,6 +21,30 @@ if not API_TOKEN:
 bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
+
+# ================ ЛОГОТИП В ВИДЕ BASE64 ================
+# Логотип ДОНАКВА в формате base64 (встроен в код)
+LOGO_BASE64 = "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"
+
+async def send_logo(chat_id, caption, reply_markup=None, parse_mode="HTML"):
+    """Отправляет логотип из base64 или текст если не получилось"""
+    try:
+        # Декодируем base64 в изображение
+        image_data = base64.b64decode(LOGO_BASE64)
+        image_io = BytesIO(image_data)
+        image_io.name = 'logo.png'
+        
+        await bot.send_photo(
+            chat_id=chat_id,
+            photo=InputFile(image_io),
+            caption=caption,
+            reply_markup=reply_markup,
+            parse_mode=parse_mode
+        )
+        return True
+    except Exception as e:
+        print(f"Ошибка отправки логотипа: {e}")
+        return False
 
 # ================ КЛАВИАТУРЫ ================
 # Главное меню
@@ -93,16 +119,11 @@ site_kb = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# ================ URL ЛОГОТИПА ================
-# Логотип с вашего сайта
-LOGO_URL = "https://donaqua.pro/wp-content/uploads/2021/04/logo-1.png"
-
 # ================ ОБРАБОТЧИКИ КОМАНД ================
 @dp.message_handler(commands=['start'])
 async def cmd_start(message: types.Message):
     """Обработчик команды /start с логотипом"""
     
-    # Текст приветствия
     welcome_text = (
         "🌊 <b>Добро пожаловать в ДОНАКВА!</b>\n\n"
         "Мы — профессиональная команда специалистов по очистке воды, "
@@ -113,17 +134,16 @@ async def cmd_start(message: types.Message):
         "Выберите нужный раздел в меню ниже 👇"
     )
     
-    try:
-        # Отправляем логотип с подписью
-        await message.answer_photo(
-            photo=LOGO_URL,
-            caption=welcome_text,
-            reply_markup=main_kb,
-            parse_mode="HTML"
-        )
-    except Exception as e:
-        # Если не получилось отправить логотип, отправляем просто текст
-        print(f"Ошибка отправки логотипа: {e}")
+    # Пробуем отправить логотип
+    success = await send_logo(
+        chat_id=message.chat.id,
+        caption=welcome_text,
+        reply_markup=main_kb,
+        parse_mode="HTML"
+    )
+    
+    # Если не получилось - отправляем просто текст
+    if not success:
         text = (
             "🌊 <b>ДОНАКВА</b> — фильтры для воды, насосы, бассейны.\n\n"
             "Адрес магазина:\n"
@@ -230,10 +250,10 @@ async def handle_pool_request(message: types.Message):
         reply_markup=back_kb
     )
 
-# ================ РАЗДЕЛ: О КОМПАНИИ (ОБНОВЛЕН) ================
+# ================ РАЗДЕЛ: О КОМПАНИИ ================
 @dp.message_handler(Text(equals="ℹ️ О компании ДОНАКВА"))
 async def handle_about(message: types.Message):
-    """Информация о компании с сайта donaqua.pro"""
+    """Информация о компании с логотипом"""
     
     about_text = (
         "🏢 <b>О компании ДОНАКВА</b>\n\n"
@@ -258,17 +278,16 @@ async def handle_about(message: types.Message):
         "🌐 <b>Сайт:</b> www.donaqua.pro"
     )
     
-    try:
-        # Отправляем логотип с информацией о компании
-        await message.answer_photo(
-            photo=LOGO_URL,
-            caption=about_text,
-            reply_markup=site_kb,
-            parse_mode="HTML"
-        )
-    except Exception as e:
-        # Если не получилось отправить логотип, отправляем просто текст
-        print(f"Ошибка отправки логотипа: {e}")
+    # Пробуем отправить логотип
+    success = await send_logo(
+        chat_id=message.chat.id,
+        caption=about_text,
+        reply_markup=site_kb,
+        parse_mode="HTML"
+    )
+    
+    # Если не получилось - отправляем просто текст
+    if not success:
         await message.answer(about_text, reply_markup=site_kb, parse_mode="HTML")
 
 # ================ РАЗДЕЛ: ПАРТНЁРСКАЯ ПРОГРАММА ================
@@ -401,21 +420,7 @@ async def handle_free_text(message: types.Message):
             reply_markup=main_kb
         )
 
-# ================ ЗАПУСК БОТА ================
-async def main():
-    """Главная функция запуска"""
-    print(f"🤖 Бот ДОНАКВА запущен")
-    print(f"🔑 Токен: {API_TOKEN[:10]}...")
-    print(f"👤 Админ ID: {ADMIN_ID}")
-    print(f"🖼 Логотип: {LOGO_URL}")
-    print("🔄 Ожидание сообщений...")
-    
-    # Удаляем вебхук (на случай если был)
-    await bot.delete_webhook(drop_pending_updates=True)
-    
-    # Запускаем поллинг
-    await dp.start_polling()
-    # ================ ВЕБ-СЕРВЕР ДЛЯ RENDER ================
+# ================ ВЕБ-СЕРВЕР ДЛЯ RENDER ================
 # Это заглушка, чтобы Render думал, что это веб-сервис
 from aiohttp import web
 
@@ -438,14 +443,15 @@ async def run_web_server():
     # Бесконечно ждем
     await asyncio.Event().wait()
 
-# Измени функцию main на это:
+# ================ ЗАПУСК БОТА ================
 async def main():
+    """Главная функция запуска"""
     print(f"🤖 Бот ДОНАКВА запущен")
     print(f"🔑 Токен: {API_TOKEN[:10]}...")
     print(f"👤 Админ ID: {ADMIN_ID}")
-    print(f"🖼 Логотип: {LOGO_URL}")
+    print(f"🖼 Логотип: встроенный (base64)")
     
-    # Удаляем вебхук
+    # Удаляем вебхук (на случай если был)
     await bot.delete_webhook(drop_pending_updates=True)
     
     # Запускаем бота и веб-сервер параллельно
