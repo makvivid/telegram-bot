@@ -415,6 +415,45 @@ async def main():
     
     # Запускаем поллинг
     await dp.start_polling()
+    # ================ ВЕБ-СЕРВЕР ДЛЯ RENDER ================
+# Это заглушка, чтобы Render думал, что это веб-сервис
+from aiohttp import web
+
+async def handle(request):
+    return web.Response(text="🤖 Telegram бот ДОНАКВА работает!")
+
+async def run_web_server():
+    app = web.Application()
+    app.router.add_get('/', handle)
+    app.router.add_get('/health', handle)
+    
+    port = int(os.environ.get('PORT', 10000))
+    print(f"🌐 Веб-сервер заглушка запущен на порту {port}")
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    
+    # Бесконечно ждем
+    await asyncio.Event().wait()
+
+# Измени функцию main на это:
+async def main():
+    print(f"🤖 Бот ДОНАКВА запущен")
+    print(f"🔑 Токен: {API_TOKEN[:10]}...")
+    print(f"👤 Админ ID: {ADMIN_ID}")
+    print(f"🖼 Логотип: {LOGO_URL}")
+    
+    # Удаляем вебхук
+    await bot.delete_webhook(drop_pending_updates=True)
+    
+    # Запускаем бота и веб-сервер параллельно
+    polling_task = asyncio.create_task(dp.start_polling())
+    web_task = asyncio.create_task(run_web_server())
+    
+    # Ждем оба задачи
+    await asyncio.gather(polling_task, web_task)
 
 if __name__ == "__main__":
     try:
