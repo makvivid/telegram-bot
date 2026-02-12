@@ -429,28 +429,56 @@ async def handle_photo(message: types.Message):
         await message.answer("✅ Спасибо!", reply_markup=main_kb)
 
 # ================ ТЕКСТОВЫЕ ЗАЯВКИ С РАЗДЕЛАМИ ================
+user_last_section = {}  # Словарь: user_id -> последний раздел
+
+@dp.message_handler(Text(equals=["🧪 Анализ воды", "💧 Подбор системы очистки", "🏊 Химия и оборудование для бассейнов", "ℹ️ О компании ДОНАКВА", "🤝 Партнёрская программа", "📩 Оставить заявку"]))
+async def track_section(message: types.Message):
+    """Запоминаем, в каком разделе находится пользователь"""
+    section_map = {
+        "🧪 Анализ воды": "🧪 АНАЛИЗ ВОДЫ",
+        "💧 Подбор системы очистки": "💧 ПОДБОР СИСТЕМЫ",
+        "🏊 Химия и оборудование для бассейнов": "🏊 БАССЕЙНЫ",
+        "ℹ️ О компании ДОНАКВА": "ℹ️ О КОМПАНИИ",
+        "🤝 Партнёрская программа": "🤝 ПАРТНЁРСКАЯ ПРОГРАММА",
+        "📩 Оставить заявку": "📩 ЗАЯВКА"
+    }
+    
+    user_last_section[message.from_user.id] = section_map.get(message.text, "📬 ОБЩАЯ ЗАЯВКА")
+    await message.answer("📝 Опишите ваш вопрос или задачу", reply_markup=back_kb)
+
 @dp.message_handler()
 async def handle_text(message: types.Message):
     # Пропускаем команды и админа
     if message.text.startswith('/') or is_admin(message.from_user.id):
         return
     
-    # ОПРЕДЕЛЯЕМ РАЗДЕЛ
-    text_lower = message.text.lower()
+    user_id = message.from_user.id
     
-    if any(word in text_lower for word in ["анализ", "вода", "сдать", "проба", "бутылка"]):
-        section = "🧪 АНАЛИЗ ВОДЫ"
-    elif any(word in text_lower for word in ["бассейн", "химия", "хлор", "бром", "фильтр", "насос", "песочный"]):
-        section = "🏊 БАССЕЙНЫ"
-    elif any(word in text_lower for word in ["систем", "очистк", "фильтр", "умягчение", "обезжелезивание", "осмос"]):
-        section = "💧 ПОДБОР СИСТЕМЫ"
-    elif any(word in text_lower for word in ["партн", "сотрудничеств", "дилер", "монтажник", "сантехник", "прораб"]):
-        section = "🤝 ПАРТНЁРСКАЯ ПРОГРАММА"
+    # 1️⃣ Сначала проверяем — есть ли запомненный раздел?
+    if user_id in user_last_section:
+        section = user_last_section[user_id]
+        # Очищаем, чтобы следующее сообщение не ушло в тот же раздел
+        del user_last_section[user_id]
     else:
-        section = "📬 ОБЩАЯ ЗАЯВКА"
+        # 2️⃣ Если нет — пытаемся угадать по тексту
+        text_lower = message.text.lower()
+        
+        if any(word in text_lower for word in ["анализ", "вода", "сдать", "проба", "бутылка", "3500"]):
+            section = "🧪 АНАЛИЗ ВОДЫ"
+        elif any(word in text_lower for word in ["бассейн", "химия", "хлор", "бром", "альгицид", "фильтр", "насос", "песочный", "картриджный"]):
+            section = "🏊 БАССЕЙНЫ"
+        elif any(word in text_lower for word in ["систем", "очистк", "фильтр", "умягчение", "обезжелезивание", "осмос", "мембран"]):
+            section = "💧 ПОДБОР СИСТЕМЫ"
+        elif any(word in text_lower for word in ["партн", "сотрудничеств", "дилер", "монтажник", "сантехник", "прораб", "архитектор", "дизайнер", "бурильщик"]):
+            section = "🤝 ПАРТНЁРСКАЯ ПРОГРАММА"
+        elif any(word in text_lower for word in ["компани", "донаква", "адрес", "телефон", "сайт", "donaqua"]):
+            section = "ℹ️ О КОМПАНИИ"
+        else:
+            section = "📬 ОБЩАЯ ЗАЯВКА"
     
     user = message.from_user
     
+    # Отправляем админу
     try:
         await bot.send_message(
             ADMIN_ID,
