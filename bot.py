@@ -55,21 +55,34 @@ class ReplyStates(StatesGroup):
     waiting_for_reply = State()
 
 # ================ ЛОГОТИП ================
-from aiogram.types import FSInputFile
+from aiogram.types import InputFile
+import os
 
-LOGO_FILE = FSInputFile("logo.png")
+LOGO_PATH = "logo.png"
 
 async def send_logo(chat_id, caption, reply_markup=None, parse_mode="HTML"):
     try:
-        await bot.send_photo(
-            chat_id=chat_id,
-            photo=LOGO_FILE,
-            caption=caption,
-            reply_markup=reply_markup,
-            parse_mode=parse_mode
-        )
+        # Проверяем, существует ли файл
+        if os.path.exists(LOGO_PATH):
+            with open(LOGO_PATH, 'rb') as photo:
+                await bot.send_photo(
+                    chat_id=chat_id,
+                    photo=InputFile(photo),
+                    caption=caption,
+                    reply_markup=reply_markup,
+                    parse_mode=parse_mode
+                )
+        else:
+            # Если файла нет, отправляем просто текст
+            await bot.send_message(
+                chat_id=chat_id,
+                text=caption,
+                reply_markup=reply_markup,
+                parse_mode=parse_mode
+            )
         return True
-    except:
+    except Exception as e:
+        print(f"Ошибка логотипа: {e}")
         try:
             await bot.send_message(
                 chat_id=chat_id,
