@@ -9,7 +9,7 @@ from aiogram.dispatcher.filters import Text
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiohttp import web
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # ================ НАСТРОЙКИ ================
 API_TOKEN = os.getenv("BOT_TOKEN")
@@ -24,6 +24,7 @@ dp = Dispatcher(bot, storage=storage)
 
 # ================ БАЗА ДАННЫХ ================
 USERS_FILE = "users.json"
+NEWSLETTERS_FILE = "newsletters.json"
 
 def load_users():
     try:
@@ -46,6 +47,28 @@ def save_user(user_id, username, full_name):
     with open(USERS_FILE, "w") as f:
         json.dump(users, f, indent=2, ensure_ascii=False)
 
+def load_newsletters():
+    try:
+        with open(NEWSLETTERS_FILE, "r") as f:
+            return json.load(f)
+    except:
+        return []
+
+def save_newsletter(newsletter_data):
+    newsletters = load_newsletters()
+    newsletter_data['id'] = str(datetime.now().timestamp())
+    newsletter_data['date'] = str(datetime.now())
+    newsletters.append(newsletter_data)
+    with open(NEWSLETTERS_FILE, "w") as f:
+        json.dump(newsletters, f, indent=2, ensure_ascii=False)
+    return newsletter_data['id']
+
+def delete_newsletter(newsletter_id):
+    newsletters = load_newsletters()
+    newsletters = [n for n in newsletters if n.get('id') != newsletter_id]
+    with open(NEWSLETTERS_FILE, "w") as f:
+        json.dump(newsletters, f, indent=2, ensure_ascii=False)
+
 # ================ СОСТОЯНИЯ ================
 class NewsletterStates(StatesGroup):
     waiting_for_text = State()
@@ -62,7 +85,6 @@ LOGO_PATH = "logo.png"
 
 async def send_logo(chat_id, caption, reply_markup=None, parse_mode="HTML"):
     try:
-        # Проверяем, существует ли файл
         if os.path.exists(LOGO_PATH):
             with open(LOGO_PATH, 'rb') as photo:
                 await bot.send_photo(
@@ -73,7 +95,6 @@ async def send_logo(chat_id, caption, reply_markup=None, parse_mode="HTML"):
                     parse_mode=parse_mode
                 )
         else:
-            # Если файла нет, отправляем просто текст
             await bot.send_message(
                 chat_id=chat_id,
                 text=caption,
@@ -96,19 +117,15 @@ async def send_logo(chat_id, caption, reply_markup=None, parse_mode="HTML"):
 
 # ================ ФУНКЦИЯ ДЛЯ КЛИКАБЕЛЬНОГО ИМЕНИ ================
 def user_link(user):
-    """Возвращает красивую ссылку на пользователя"""
     if user.username:
         return f"@{user.username}"
     else:
         name = user.full_name if user.full_name else "Пользователь"
         return f"[{name}](tg://user?id={user.id})"
 
-# ================ ФУНКЦИЯ ДЛЯ КЛИКАБЕЛЬНОГО ТЕЛЕФОНА (УЛУЧШЕНО) ================
+# ================ ФУНКЦИЯ ДЛЯ КЛИКАБЕЛЬНОГО ТЕЛЕФОНА ================
 def format_phone(phone):
-    """Возвращает кликабельный номер телефона в виде красивой кнопки"""
-    # Убираем все пробелы, дефисы, скобки — оставляем только цифры и +
     clean_phone = re.sub(r'[^\d+]', '', phone)
-    # Формат для tel: ссылки
     return f'<a href="tel:{clean_phone}">{phone}</a>'
 
 # ================ КЛИКАБЕЛЬНЫЙ ТЕЛЕФОН И АДРЕС ================
@@ -185,10 +202,13 @@ site_kb = ReplyKeyboardMarkup(
 
 # ================ АДМИН-КЛАВИАТУРА ================
 def get_admin_kb():
-    kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.add(KeyboardButton("📢 ОТПРАВИТЬ НОВОСТЬ"))
-    kb.add(KeyboardButton("👥 СТАТИСТИКА"))
-    kb.add(KeyboardButton("🔙 Назад в главное меню"))
+    kb = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    kb.add(
+        KeyboardButton("📢 Новая рассылка"),
+        KeyboardButton("📋 Мои рассылки"),
+        KeyboardButton("👥 Статистика"),
+        KeyboardButton("🔙 Назад в главное меню")
+    )
     return kb
 
 # ================ ПРОВЕРКА АДМИНА ================
@@ -222,50 +242,75 @@ async def cmd_start(message: types.Message):
         "Выберите нужный раздел 👇"
     )
 
-    await send_logo(message.chat.id, welcome_text, main_kb, "HTML")
-
     if is_admin(message.from_user.id):
+        await send_logo(message.chat.id, welcome_text, get_admin_kb(), "HTML")
         await message.answer("👑 ПАНЕЛЬ АДМИНИСТРАТОРА", reply_markup=get_admin_kb())
+    else:
+        await send_logo(message.chat.id, welcome_text, main_kb, "HTML")
 
 # ================ НАЗАД ================
 @dp.message_handler(Text(equals="🔙 Назад в главное меню"))
 async def back_to_main(message: types.Message):
-    await cmd_start(message)
+    if is_admin(message.from_user.id):
+        await cmd_start(message)
+    else:
+        await cmd_start(message)
 
-# ================ СТАТИСТИКА ================
-@dp.message_handler(Text(equals="👥 СТАТИСТИКА"))
+# ================ СТАТИСТИКА (НОВАЯ) ================
+@dp.message_handler(Text(equals="👥 Статистика"))
 async def show_stats(message: types.Message):
     if not is_admin(message.from_user.id):
         return
 
     users = load_users()
-    count = len(users)
+    newsletters = load_newsletters()
+    
+    now = datetime.now()
+    today = now.date()
+    week_ago = now - timedelta(days=7)
+    month_ago = now - timedelta(days=30)
+    
+    new_today = 0
+    new_week = 0
+    new_month = 0
+    
+    for user in users:
+        try:
+            joined = datetime.fromisoformat(user['joined_date'])
+            if joined.date() == today:
+                new_today += 1
+            if joined > week_ago:
+                new_week += 1
+            if joined > month_ago:
+                new_month += 1
+        except:
+            pass
 
-    text = f"📊 <b>Статистика бота</b>\n\n👥 Всего пользователей: {count}"
-
-    if count > 0:
-        text += f"\n\n📅 Последние 5:\n"
-        for user in users[-5:]:
-            name = user['full_name'][:20]
-            username = f"@{user['username']}" if user['username'] else "нет"
-            text += f"• {name} {username}\n"
+    text = (
+        f"📊 <b>Статистика бота</b>\n\n"
+        f"👥 Всего пользователей: {len(users)}\n"
+        f"🆕 Новых за сегодня: {new_today}\n"
+        f"📅 Новых за неделю: {new_week}\n"
+        f"📆 Новых за месяц: {new_month}\n\n"
+        f"📨 Всего рассылок: {len(newsletters)}"
+    )
 
     await message.answer(text, parse_mode="HTML", reply_markup=get_admin_kb())
 
 # ================ РАССЫЛКА ================
 newsletter_data = {}
 
-@dp.message_handler(Text(equals="📢 ОТПРАВИТЬ НОВОСТЬ"))
+@dp.message_handler(Text(equals="📢 Новая рассылка"))
 async def start_newsletter(message: types.Message):
     if not is_admin(message.from_user.id):
         return
 
     await message.answer(
-        "📝 <b>Отправка новости</b>\n\n"
-        "1️⃣ Отправьте текст новости\n"
-        "2️⃣ Или отправьте фото с подписью\n"
-        "3️⃣ Или просто фото без текста\n\n"
-        "❌ Для отмены нажмите кнопку назад",
+        "📝 <b>Новая рассылка</b>\n\n"
+        "1️⃣ Отправьте текст\n"
+        "2️⃣ Или фото с подписью\n"
+        "3️⃣ Или просто фото\n\n"
+        "❌ Отмена — кнопка назад",
         parse_mode="HTML",
         reply_markup=back_kb
     )
@@ -285,7 +330,7 @@ async def get_newsletter_content(message: types.Message, state: FSMContext):
     if message.photo:
         newsletter_data['photo'] = message.photo[-1].file_id
         newsletter_data['caption'] = message.caption or ""
-        preview_text = f"📢 <b>Предпросмотр новости</b>\n\n{message.caption or 'Без подписи'}"
+        preview_text = f"📢 <b>Предпросмотр</b>\n\n{message.caption or 'Без подписи'}"
         await message.answer_photo(
             message.photo[-1].file_id,
             caption=preview_text,
@@ -294,7 +339,7 @@ async def get_newsletter_content(message: types.Message, state: FSMContext):
     else:
         newsletter_data['text'] = message.text
         newsletter_data.pop('photo', None)
-        preview_text = f"📢 <b>Предпросмотр новости</b>\n\n{message.text}"
+        preview_text = f"📢 <b>Предпросмотр</b>\n\n{message.text}"
         await message.answer(preview_text, parse_mode="HTML")
 
     confirm_kb = InlineKeyboardMarkup(row_width=2)
@@ -305,7 +350,7 @@ async def get_newsletter_content(message: types.Message, state: FSMContext):
 
     users = load_users()
     await message.answer(
-        f"👥 Будет отправлено: <b>{len(users)} пользователям</b>\n\nОтправить?",
+        f"👥 Будет отправлено: <b>{len(users)}</b>\n\nОтправить?",
         parse_mode="HTML",
         reply_markup=confirm_kb
     )
@@ -327,6 +372,10 @@ async def send_newsletter(callback_query: types.CallbackQuery, state: FSMContext
 
     sent = 0
     failed = 0
+    
+    newsletter_copy = newsletter_data.copy()
+    newsletter_copy['sent_count'] = 0
+    newsletter_copy['failed_count'] = 0
 
     for user in users:
         try:
@@ -334,7 +383,7 @@ async def send_newsletter(callback_query: types.CallbackQuery, state: FSMContext
                 await bot.send_photo(
                     user["id"],
                     newsletter_data['photo'],
-                    caption=newsletter_data['caption']
+                    caption=newsletter_data.get('caption', '')
                 )
             else:
                 await bot.send_message(
@@ -346,25 +395,81 @@ async def send_newsletter(callback_query: types.CallbackQuery, state: FSMContext
         except:
             failed += 1
 
+    newsletter_copy['sent_count'] = sent
+    newsletter_copy['failed_count'] = failed
+    newsletter_copy['total_users'] = len(users)
+    
+    newsletter_id = save_newsletter(newsletter_copy)
+
     await status_msg.edit_text(
         f"✅ <b>Рассылка завершена!</b>\n\n"
         f"📨 Отправлено: {sent}\n"
         f"❌ Ошибок: {failed}\n"
-        f"👥 Всего: {len(users)}",
-        parse_mode="HTML"
+        f"👥 Всего: {len(users)}\n"
+        f"🆔 ID: {newsletter_id}",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup().add(
+            InlineKeyboardButton("📋 Мои рассылки", callback_data="list_newsletters")
+        )
     )
 
     newsletter_data.clear()
     await state.finish()
-    await cmd_start(callback_query.message)
 
 @dp.callback_query_handler(lambda c: c.data == "cancel_news", state=NewsletterStates.waiting_for_confirmation)
 async def cancel_newsletter(callback_query: types.CallbackQuery, state: FSMContext):
-    await bot.answer_callback_query(callback_query.id, "❌ Рассылка отменена")
+    await bot.answer_callback_query(callback_query.id, "❌ Отменено")
     newsletter_data.clear()
     await state.finish()
     await bot.send_message(callback_query.from_user.id, "❌ Рассылка отменена.")
     await cmd_start(callback_query.message)
+
+# ================ МОИ РАССЫЛКИ ================
+@dp.message_handler(Text(equals="📋 Мои рассылки"))
+async def list_newsletters(message: types.Message):
+    if not is_admin(message.from_user.id):
+        return
+    
+    newsletters = load_newsletters()
+    if not newsletters:
+        await message.answer("📭 У вас ещё нет рассылок", reply_markup=get_admin_kb())
+        return
+    
+    for nl in newsletters[-5:][::-1]:  # последние 5, сначала новые
+        date_str = nl.get('date', 'неизвестно')[:16]  # обрезаем время до минут
+        text = f"📅 <b>{date_str}</b>\n"
+        text += f"👥 Отправлено: {nl.get('sent_count', 0)}/{nl.get('total_users', 0)}\n"
+        if 'text' in nl:
+            preview = nl['text'][:100] + ('...' if len(nl['text']) > 100 else '')
+            text += f"💬 {preview}\n"
+        elif 'photo' in nl:
+            text += f"🖼 Фото: {nl.get('caption', 'Без текста')[:50]}\n"
+        
+        kb = InlineKeyboardMarkup().add(
+            InlineKeyboardButton("❌ Удалить", callback_data=f"del_news_{nl['id']}")
+        )
+        await message.answer(text, parse_mode="HTML", reply_markup=kb)
+
+@dp.callback_query_handler(lambda c: c.data and c.data.startswith('del_news_'))
+async def delete_newsletter_callback(callback_query: types.CallbackQuery):
+    await bot.answer_callback_query(callback_query.id)
+    
+    if not is_admin(callback_query.from_user.id):
+        return
+    
+    newsletter_id = callback_query.data.replace('del_news_', '')
+    delete_newsletter(newsletter_id)
+    
+    await bot.send_message(
+        callback_query.from_user.id,
+        f"✅ Рассылка удалена"
+    )
+    await callback_query.message.delete()
+
+@dp.callback_query_handler(lambda c: c.data == "list_newsletters")
+async def list_newsletters_callback(callback_query: types.CallbackQuery):
+    await bot.answer_callback_query(callback_query.id)
+    await list_newsletters(callback_query.message)
 
 # ================ РАЗДЕЛ: АНАЛИЗ ВОДЫ ================
 @dp.message_handler(Text(equals="🧪 Анализ воды"))
@@ -899,13 +1004,11 @@ async def forward_media_to_admin(message: types.Message, media_type: str, file_i
         base_caption += f"\n💬 {caption_extra}"
 
     try:
-        # Определяем метод отправки в зависимости от типа
         if media_type == 'photo':
             await bot.send_photo(ADMIN_ID, file_id, caption=base_caption, parse_mode="Markdown", reply_markup=reply_markup)
         elif media_type == 'video':
             await bot.send_video(ADMIN_ID, file_id, caption=base_caption, parse_mode="Markdown", reply_markup=reply_markup)
         elif media_type == 'voice':
-            # Для голосовых caption не поддерживается, отправляем отдельно
             await bot.send_voice(ADMIN_ID, file_id, reply_markup=reply_markup)
             await bot.send_message(ADMIN_ID, base_caption, parse_mode="Markdown")
         elif media_type == 'video_note':
@@ -915,11 +1018,6 @@ async def forward_media_to_admin(message: types.Message, media_type: str, file_i
             await bot.send_document(ADMIN_ID, file_id, caption=base_caption, parse_mode="Markdown", reply_markup=reply_markup)
         elif media_type == 'audio':
             await bot.send_audio(ADMIN_ID, file_id, caption=base_caption, parse_mode="Markdown", reply_markup=reply_markup)
-        elif media_type == 'location':
-            # Для location нужно передавать координаты
-            pass # Обрабатывается отдельно
-        elif media_type == 'contact':
-            pass # Обрабатывается отдельно
 
         await message.answer(f"✅ Спасибо! {media_type} получено.", reply_markup=main_kb)
     except Exception as e:
