@@ -55,13 +55,15 @@ class ReplyStates(StatesGroup):
     waiting_for_reply = State()
 
 # ================ ЛОГОТИП ================
-LOGO_URL = "https://donaqua.pro/wp-content/uploads/2021/04/logo-1.png"
+from aiogram.types import FSInputFile
+
+LOGO_FILE = FSInputFile("logo.png")
 
 async def send_logo(chat_id, caption, reply_markup=None, parse_mode="HTML"):
     try:
         await bot.send_photo(
             chat_id=chat_id,
-            photo=LOGO_URL,
+            photo=LOGO_FILE,
             caption=caption,
             reply_markup=reply_markup,
             parse_mode=parse_mode
