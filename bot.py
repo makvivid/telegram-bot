@@ -25,6 +25,7 @@ dp = Dispatcher(bot, storage=storage)
 # ================ БАЗА ДАННЫХ ================
 USERS_FILE = "users.json"
 NEWSLETTERS_FILE = "newsletters.json"
+REQUESTS_FILE = "requests.json"
 
 def load_users():
     try:
@@ -33,15 +34,18 @@ def load_users():
     except:
         return []
 
-def save_user(user_id, username, full_name):
+def save_user(user_id, username, full_name, phone=None):
     users = load_users()
     for user in users:
         if user["id"] == user_id:
+            if phone:
+                user["phone"] = phone
             return
     users.append({
         "id": user_id,
         "username": username,
         "full_name": full_name,
+        "phone": phone,
         "joined_date": str(datetime.now())
     })
     with open(USERS_FILE, "w") as f:
@@ -69,6 +73,30 @@ def delete_newsletter(newsletter_id):
     with open(NEWSLETTERS_FILE, "w") as f:
         json.dump(newsletters, f, indent=2, ensure_ascii=False)
 
+def load_requests():
+    try:
+        with open(REQUESTS_FILE, "r") as f:
+            return json.load(f)
+    except:
+        return {}
+
+def save_request(user_id, request_data):
+    requests = load_requests()
+    requests[str(user_id)] = request_data
+    with open(REQUESTS_FILE, "w") as f:
+        json.dump(requests, f, indent=2, ensure_ascii=False)
+
+# ================ АНТИСПАМ ================
+last_message_time = {}
+
+def check_spam(user_id):
+    now = datetime.now()
+    if user_id in last_message_time:
+        if now - last_message_time[user_id] < timedelta(seconds=3):
+            return False
+    last_message_time[user_id] = now
+    return True
+
 # ================ СОСТОЯНИЯ ================
 class NewsletterStates(StatesGroup):
     waiting_for_text = State()
@@ -76,6 +104,9 @@ class NewsletterStates(StatesGroup):
 
 class ReplyStates(StatesGroup):
     waiting_for_reply = State()
+
+class RequestStates(StatesGroup):
+    waiting_for_phone = State()
 
 # ================ ЛОГОТИП ================
 from aiogram.types import InputFile
@@ -128,13 +159,48 @@ def format_phone(phone):
     clean_phone = re.sub(r'[^\d+]', '', phone)
     return f'<a href="tel:{clean_phone}">{phone}</a>'
 
-# ================ КЛИКАБЕЛЬНЫЙ ТЕЛЕФОН И АДРЕС ================
+# ================ ФУНКЦИЯ ДЛЯ КРАСИВОЙ ЗАЯВКИ ================
+def format_request(user, section, message_text, phone=None, status="NEW"):
+    name = user.full_name if user.full_name else "Не указано"
+    username = f"@{user.username}" if user.username else "отсутствует"
+    phone_display = phone if phone else "не указан"
+    now = datetime.now().strftime("%d.%m.%Y %H:%M")
+    
+    status_emoji = {"NEW": "🟡", "WORK": "🟠", "DONE": "🟢"}.get(status, "⚪")
+    
+    section_emoji = {
+        "🧪 АНАЛИЗ ВОДЫ": "🧪",
+        "💧 ПОДБОР СИСТЕМЫ": "💧",
+        "🏊 БАССЕЙНЫ": "🏊",
+        "ℹ️ О КОМПАНИИ": "ℹ️",
+        "🤝 ПАРТНЁРСКАЯ ПРОГРАММА": "🤝",
+        "📩 ЗАЯВКА": "📩",
+        "📸 ФОТО": "📸",
+        "📬 ОБЩАЯ ЗАЯВКА": "📬",
+    }.get(section, "📌")
+    
+    text = (
+        f"<b>{status_emoji} НОВАЯ ЗАЯВКА</b>\n\n"
+        f"<b>👤 Имя:</b> {name}\n"
+        f"<b>🔗 Username:</b> {username}\n"
+        f"<b>🆔 ID:</b> <code>{user.id}</code>\n\n"
+        f"<b>📱 Телефон:</b> {phone_display}\n"
+        f"<b>📍 Раздел:</b> {section_emoji} {section}\n\n"
+        f"<b>💬 Сообщение:</b>\n{message_text}\n\n"
+        f"<b>🕒 Дата:</b> {now}\n"
+        f"<b>📊 Статус:</b> {status_emoji} {status}"
+    )
+    return text
+
+# ================ КЛАВИАТУРЫ ================
 PHONE_NUMBER = "+7 949 321‑98‑00"
 PHONE_LINK = format_phone(PHONE_NUMBER)
 ADDRESS = "г. Донецк, ул. Щорса, д. 38"
 ADDRESS_LINK = f'<a href="https://yandex.ru/maps/?text=Донецк+ул.+Щорса+38">{ADDRESS}</a>'
 
-# ================ КЛАВИАТУРЫ ================
+phone_kb = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+phone_kb.add(KeyboardButton("📱 Отправить номер", request_contact=True))
+
 main_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🧪 Анализ воды"), KeyboardButton(text="💧 Подбор системы очистки")],
@@ -207,6 +273,7 @@ def get_admin_kb():
         KeyboardButton("📢 Новая рассылка"),
         KeyboardButton("📋 Мои рассылки"),
         KeyboardButton("👥 Статистика"),
+        KeyboardButton("📊 Статусы заявок"),
         KeyboardButton("🔙 Назад в главное меню")
     )
     return kb
@@ -217,13 +284,14 @@ def is_admin(user_id):
 
 # ================ ХРАНИЛИЩЕ РАЗДЕЛОВ ================
 user_section = {}
-
-# ================ ХРАНИЛИЩЕ ДЛЯ ОТВЕТОВ ================
 reply_data = {}
 
 # ================ СТАРТ ================
 @dp.message_handler(commands=['start'])
 async def cmd_start(message: types.Message):
+    if not check_spam(message.from_user.id):
+        return
+    
     save_user(
         message.from_user.id,
         message.from_user.username,
@@ -251,12 +319,9 @@ async def cmd_start(message: types.Message):
 # ================ НАЗАД ================
 @dp.message_handler(Text(equals="🔙 Назад в главное меню"))
 async def back_to_main(message: types.Message):
-    if is_admin(message.from_user.id):
-        await cmd_start(message)
-    else:
-        await cmd_start(message)
+    await cmd_start(message)
 
-# ================ СТАТИСТИКА (НОВАЯ) ================
+# ================ СТАТИСТИКА ================
 @dp.message_handler(Text(equals="👥 Статистика"))
 async def show_stats(message: types.Message):
     if not is_admin(message.from_user.id):
@@ -435,8 +500,8 @@ async def list_newsletters(message: types.Message):
         await message.answer("📭 У вас ещё нет рассылок", reply_markup=get_admin_kb())
         return
     
-    for nl in newsletters[-5:][::-1]:  # последние 5, сначала новые
-        date_str = nl.get('date', 'неизвестно')[:16]  # обрезаем время до минут
+    for nl in newsletters[-5:][::-1]:
+        date_str = nl.get('date', 'неизвестно')[:16]
         text = f"📅 <b>{date_str}</b>\n"
         text += f"👥 Отправлено: {nl.get('sent_count', 0)}/{nl.get('total_users', 0)}\n"
         if 'text' in nl:
@@ -989,147 +1054,37 @@ async def reply_to_user(message: types.Message):
     except Exception as e:
         await message.answer(f"❌ Ошибка при отправке: {e}")
 
-# ================ УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ДЛЯ ОТПРАВКИ ЛЮБОГО МЕДИА ================
-async def forward_media_to_admin(message: types.Message, media_type: str, file_id: str, caption_extra: str = ""):
-    """Универсальная функция для пересылки любого типа медиа админу"""
-    user = message.from_user
-    section = user_section.get(user.id, f"📬 {media_type.upper()}")
-
-    reply_markup = InlineKeyboardMarkup().add(
-        InlineKeyboardButton("💬 Ответить", callback_data=f"reply_{user.id}")
-    )
-
-    base_caption = f"🔔 <b>{section}</b>\n\n👤 {user_link(user)}\n🆔 {user.id}"
-    if caption_extra:
-        base_caption += f"\n💬 {caption_extra}"
-
-    try:
-        if media_type == 'photo':
-            await bot.send_photo(ADMIN_ID, file_id, caption=base_caption, parse_mode="Markdown", reply_markup=reply_markup)
-        elif media_type == 'video':
-            await bot.send_video(ADMIN_ID, file_id, caption=base_caption, parse_mode="Markdown", reply_markup=reply_markup)
-        elif media_type == 'voice':
-            await bot.send_voice(ADMIN_ID, file_id, reply_markup=reply_markup)
-            await bot.send_message(ADMIN_ID, base_caption, parse_mode="Markdown")
-        elif media_type == 'video_note':
-            await bot.send_video_note(ADMIN_ID, file_id, reply_markup=reply_markup)
-            await bot.send_message(ADMIN_ID, base_caption, parse_mode="Markdown")
-        elif media_type == 'document':
-            await bot.send_document(ADMIN_ID, file_id, caption=base_caption, parse_mode="Markdown", reply_markup=reply_markup)
-        elif media_type == 'audio':
-            await bot.send_audio(ADMIN_ID, file_id, caption=base_caption, parse_mode="Markdown", reply_markup=reply_markup)
-
-        await message.answer(f"✅ Спасибо! {media_type} получено.", reply_markup=main_kb)
-    except Exception as e:
-        print(f"Ошибка отправки {media_type}: {e}")
-        await message.answer("✅ Спасибо!", reply_markup=main_kb)
-
-    if user.id in user_section:
-        del user_section[user.id]
-
-# ================ ФОТО ================
+# ================ ОБРАБОТЧИК ФОТО ================
 @dp.message_handler(content_types=['photo'])
 async def handle_photo(message: types.Message):
-    if is_admin(message.from_user.id):
+    if is_admin(message.from_user.id) or not check_spam(message.from_user.id):
         return
-    await forward_media_to_admin(message, 'photo', message.photo[-1].file_id, message.caption)
 
-# ================ ВИДЕО ================
-@dp.message_handler(content_types=['video'])
-async def handle_video(message: types.Message):
-    if is_admin(message.from_user.id):
-        return
-    await forward_media_to_admin(message, 'video', message.video.file_id, message.caption)
-
-# ================ ГОЛОСОВЫЕ ================
-@dp.message_handler(content_types=['voice'])
-async def handle_voice(message: types.Message):
-    if is_admin(message.from_user.id):
-        return
-    await forward_media_to_admin(message, 'voice', message.voice.file_id)
-
-# ================ ВИДЕОСООБЩЕНИЯ (КРУЖКИ) ================
-@dp.message_handler(content_types=['video_note'])
-async def handle_video_note(message: types.Message):
-    if is_admin(message.from_user.id):
-        return
-    await forward_media_to_admin(message, 'video_note', message.video_note.file_id)
-
-# ================ ДОКУМЕНТЫ (ФАЙЛЫ) ================
-@dp.message_handler(content_types=['document'])
-async def handle_document(message: types.Message):
-    if is_admin(message.from_user.id):
-        return
-    file_name = message.document.file_name or ""
-    await forward_media_to_admin(message, 'document', message.document.file_id, f"📄 {file_name}\n{message.caption or ''}")
-
-# ================ АУДИО ================
-@dp.message_handler(content_types=['audio'])
-async def handle_audio(message: types.Message):
-    if is_admin(message.from_user.id):
-        return
-    title = message.audio.title or message.audio.file_name or "Аудиофайл"
-    await forward_media_to_admin(message, 'audio', message.audio.file_id, f"🎵 {title}\n{message.caption or ''}")
-
-# ================ ГЕОПОЗИЦИЯ ================
-@dp.message_handler(content_types=['location'])
-async def handle_location(message: types.Message):
     user = message.from_user
-    if is_admin(user.id):
-        return
+    photo = message.photo[-1]
+    section = user_section.get(user.id, "📸 ФОТО")
 
-    section = user_section.get(user.id, "📍 ГЕОПОЗИЦИЯ")
-    reply_markup = InlineKeyboardMarkup().add(
+    request_text = format_request(
+        user=user,
+        section=section,
+        message_text=f"📸 Фото: {message.caption or 'Без подписи'}"
+    )
+
+    kb = InlineKeyboardMarkup().add(
         InlineKeyboardButton("💬 Ответить", callback_data=f"reply_{user.id}")
     )
 
     try:
-        await bot.send_location(
+        await bot.send_photo(
             ADMIN_ID,
-            message.location.latitude,
-            message.location.longitude,
-            reply_markup=reply_markup
+            photo.file_id,
+            caption=request_text,
+            parse_mode="HTML",
+            reply_markup=kb
         )
-        await bot.send_message(
-            ADMIN_ID,
-            f"🔔 <b>{section}</b>\n\n👤 {user_link(user)}\n🆔 {user.id}",
-            parse_mode="Markdown"
-        )
-        await message.answer("✅ Спасибо! Геопозиция получена.", reply_markup=main_kb)
+        await message.answer("✅ Спасибо! Фото получено.", reply_markup=main_kb)
     except Exception as e:
-        print(f"Ошибка геопозиции: {e}")
-        await message.answer("✅ Спасибо!", reply_markup=main_kb)
-
-    if user.id in user_section:
-        del user_section[user.id]
-
-# ================ КОНТАКТЫ ================
-@dp.message_handler(content_types=['contact'])
-async def handle_contact(message: types.Message):
-    user = message.from_user
-    if is_admin(user.id):
-        return
-
-    contact = message.contact
-    section = user_section.get(user.id, "👤 КОНТАКТ")
-    reply_markup = InlineKeyboardMarkup().add(
-        InlineKeyboardButton("💬 Ответить", callback_data=f"reply_{user.id}")
-    )
-
-    contact_text = f"Имя: {contact.first_name} {contact.last_name or ''}\nТелефон: {contact.phone_number}"
-    if contact.user_id:
-        contact_text += f"\nID: {contact.user_id}"
-
-    try:
-        await bot.send_message(
-            ADMIN_ID,
-            f"🔔 <b>{section}</b>\n\n👤 {user_link(user)}\n🆔 {user.id}\n\n📇 {contact_text}",
-            parse_mode="Markdown",
-            reply_markup=reply_markup
-        )
-        await message.answer("✅ Спасибо! Контакт получен.", reply_markup=main_kb)
-    except Exception as e:
-        print(f"Ошибка контакта: {e}")
+        print(f"Ошибка фото: {e}")
         await message.answer("✅ Спасибо!", reply_markup=main_kb)
 
     if user.id in user_section:
@@ -1138,41 +1093,32 @@ async def handle_contact(message: types.Message):
 # ================ ТЕКСТОВЫЕ ЗАЯВКИ ================
 @dp.message_handler()
 async def handle_text(message: types.Message):
-    if message.text.startswith('/'):
+    if message.text.startswith('/') or is_admin(message.from_user.id) or not check_spam(message.from_user.id):
         return
 
     user = message.from_user
-
-    if is_admin(user.id):
-        return
-
     section = user_section.get(user.id, "📬 ОБЩАЯ ЗАЯВКА")
 
-    try:
-        reply_markup = InlineKeyboardMarkup().add(
-            InlineKeyboardButton(
-                "💬 Ответить",
-                callback_data=f"reply_{user.id}"
-            )
-        )
+    request_text = format_request(
+        user=user,
+        section=section,
+        message_text=message.text
+    )
 
+    kb = InlineKeyboardMarkup().add(
+        InlineKeyboardButton("💬 Ответить", callback_data=f"reply_{user.id}")
+    )
+
+    try:
         await bot.send_message(
             ADMIN_ID,
-            f"🔔 <b>{section}</b>\n\n👤 {user_link(user)}\n🆔 {user.id}\n\n💬 {message.text}",
-            parse_mode="Markdown",
-            reply_markup=reply_markup
+            request_text,
+            parse_mode="HTML",
+            reply_markup=kb
         )
-        await message.answer("✅ Спасибо! Ваша заявка отправлена.", reply_markup=main_kb)
+        await message.answer("✅ Спасибо! Заявка отправлена.", reply_markup=main_kb)
     except Exception as e:
         print(f"Ошибка: {e}")
-        try:
-            await bot.send_message(
-                ADMIN_ID,
-                f"🔔 <b>{section}</b>\n\n👤 {user.full_name} (ID: {user.id})\n💬 {message.text}",
-                parse_mode="HTML"
-            )
-        except:
-            pass
         await message.answer("✅ Спасибо!", reply_markup=main_kb)
 
     if user.id in user_section:
@@ -1193,8 +1139,7 @@ async def process_reply_callback(callback_query: types.CallbackQuery, state: FSM
     await bot.send_message(
         callback_query.from_user.id,
         f"✏️ <b>Ответ пользователю ID: {user_id}</b>\n\n"
-        f"Напишите ваш ответ в ответном сообщении (Reply) на это сообщение.\n\n"
-        f"Или просто отправьте текст ниже.",
+        f"Напишите ваш ответ в ответном сообщении (Reply) на это сообщение.",
         parse_mode="HTML"
     )
 
@@ -1235,6 +1180,65 @@ async def handle_reply_text(message: types.Message, state: FSMContext):
     reply_data.pop(message.from_user.id, None)
     await state.finish()
 
+# ================ ОБРАБОТЧИК СТАТУСОВ ================
+@dp.callback_query_handler(lambda c: c.data.startswith('work_'))
+async def set_work(callback: types.CallbackQuery):
+    user_id = int(callback.data.split('_')[1])
+    
+    requests = load_requests()
+    if str(user_id) in requests:
+        requests[str(user_id)]['status'] = 'WORK'
+        with open(REQUESTS_FILE, 'w') as f:
+            json.dump(requests, f, indent=2)
+    
+    await callback.answer("✅ Заявка в работе")
+    await callback.message.edit_reply_markup()
+
+@dp.callback_query_handler(lambda c: c.data.startswith('done_'))
+async def set_done(callback: types.CallbackQuery):
+    user_id = int(callback.data.split('_')[1])
+    
+    requests = load_requests()
+    if str(user_id) in requests:
+        requests[str(user_id)]['status'] = 'DONE'
+        with open(REQUESTS_FILE, 'w') as f:
+            json.dump(requests, f, indent=2)
+    
+    await callback.answer("✅ Заявка закрыта")
+    await callback.message.edit_reply_markup()
+
+# ================ АВТОКОНТРОЛЬ ================
+async def auto_control():
+    while True:
+        await asyncio.sleep(60)
+        
+        requests = load_requests()
+        now = datetime.now()
+        
+        for user_id_str, data in requests.items():
+            user_id = int(user_id_str)
+            status = data.get('status', 'NEW')
+            request_time = datetime.fromisoformat(data['time'])
+            delta = now - request_time
+            
+            if status == 'NEW' and delta > timedelta(minutes=10):
+                await bot.send_message(
+                    ADMIN_ID,
+                    f"⚠️ Заявка от пользователя {user_id} без ответа 10 минут!"
+                )
+                data['status'] = 'REMINDED'
+                save_request(user_id, data)
+            
+            if status != 'DONE' and delta > timedelta(hours=24):
+                try:
+                    await bot.send_message(
+                        user_id,
+                        "🔔 Напоминаем о вашей заявке в ДОНАКВА.\n"
+                        "Всё ещё актуально? Напишите, и мы ответим!"
+                    )
+                except:
+                    pass
+
 # ================ ВЕБ-СЕРВЕР ================
 async def handle_web(request):
     return web.Response(text="🤖 Бот ДОНАКВА работает!")
@@ -1267,7 +1271,8 @@ async def main():
 
     await asyncio.gather(
         dp.start_polling(),
-        run_web_server()
+        run_web_server(),
+        auto_control()
     )
 
 if __name__ == "__main__":
