@@ -1019,10 +1019,11 @@ async def handle_site(message: types.Message):
         parse_mode="HTML"
     )
 
-# ================ УНИВЕРСАЛЬНЫЙ ОТВЕТ НА ЗАЯВКУ (ЧЕРЕЗ REPLY) ================
-@dp.message_handler(lambda msg: is_admin(msg.from_user.id) and msg.reply_to_message is not None)
+# ================ УНИВЕРСАЛЬНЫЙ ОТВЕТ НА ЗАЯВКУ (С ФАЙЛАМИ) ================
+@dp.message_handler(lambda msg: is_admin(msg.from_user.id) and msg.reply_to_message is not None, content_types=types.ContentType.ANY)
 async def reply_to_user(message: types.Message):
-    """Админ отвечает на заявку через reply"""
+    """Админ отвечает на заявку через reply с любыми файлами"""
+    
     reply_text = message.reply_to_message.text or message.reply_to_message.caption
     if not reply_text:
         await message.answer("❌ Не могу определить, кому ответить")
@@ -1034,17 +1035,98 @@ async def reply_to_user(message: types.Message):
         return
 
     user_id = int(match.group(1))
-    admin_reply = message.text
-
+    
     try:
-        await bot.send_message(
-            user_id,
-            f"📨 <b>Менеджер компании:</b>\n\n{admin_reply}",
-            parse_mode="HTML"
-        )
+        if message.text:
+            await bot.send_message(
+                user_id,
+                f"📨 <b>Менеджер компании:</b>\n\n{message.text}",
+                parse_mode="HTML"
+            )
+            admin_reply = message.text
+            
+        elif message.photo:
+            await bot.send_photo(
+                user_id,
+                message.photo[-1].file_id,
+                caption=f"📨 <b>Менеджер компании:</b>\n\n{message.caption or ''}",
+                parse_mode="HTML"
+            )
+            admin_reply = f"📸 Фото: {message.caption or 'без подписи'}"
+            
+        elif message.video:
+            await bot.send_video(
+                user_id,
+                message.video.file_id,
+                caption=f"📨 <b>Менеджер компании:</b>\n\n{message.caption or ''}",
+                parse_mode="HTML"
+            )
+            admin_reply = f"🎥 Видео: {message.caption or 'без подписи'}"
+            
+        elif message.voice:
+            await bot.send_voice(
+                user_id,
+                message.voice.file_id,
+                caption="📨 <b>Менеджер компании:</b> (голосовое сообщение)",
+                parse_mode="HTML"
+            )
+            admin_reply = "🎤 Голосовое сообщение"
+            
+        elif message.video_note:
+            await bot.send_video_note(
+                user_id,
+                message.video_note.file_id
+            )
+            admin_reply = "📹 Кружок"
+            
+        elif message.document:
+            await bot.send_document(
+                user_id,
+                message.document.file_id,
+                caption=f"📨 <b>Менеджер компании:</b>\n\n{message.caption or ''}",
+                parse_mode="HTML"
+            )
+            admin_reply = f"📎 Файл: {message.document.file_name}"
+            
+        elif message.audio:
+            await bot.send_audio(
+                user_id,
+                message.audio.file_id,
+                caption=f"📨 <b>Менеджер компании:</b>\n\n{message.caption or ''}",
+                parse_mode="HTML"
+            )
+            admin_reply = f"🎵 Аудио: {message.audio.title or message.audio.file_name}"
+            
+        elif message.sticker:
+            await bot.send_sticker(
+                user_id,
+                message.sticker.file_id
+            )
+            admin_reply = "🎨 Стикер"
+            
+        elif message.location:
+            await bot.send_location(
+                user_id,
+                message.location.latitude,
+                message.location.longitude
+            )
+            admin_reply = "📍 Геопозиция"
+            
+        elif message.contact:
+            await bot.send_contact(
+                user_id,
+                message.contact.phone_number,
+                message.contact.first_name,
+                last_name=message.contact.last_name or ""
+            )
+            admin_reply = f"👤 Контакт: {message.contact.first_name}"
+            
+        else:
+            await message.answer("❌ Этот тип сообщения не поддерживается для ответа")
+            return
 
         await message.answer(f"✅ Ответ отправлен пользователю ID: {user_id}")
-
+        
         await bot.send_message(
             ADMIN_ID,
             f"📤 <b>Отправлен ответ</b>\n👤 ID: {user_id}\n💬 {admin_reply}",
@@ -1053,24 +1135,37 @@ async def reply_to_user(message: types.Message):
 
     except Exception as e:
         await message.answer(f"❌ Ошибка при отправке: {e}")
+        print(f"Ошибка отправки ответа: {e}")
 
 # ================ ОБРАБОТЧИК ФОТО ================
 @dp.message_handler(content_types=['photo'])
 async def handle_photo(message: types.Message):
-    if is_admin(message.from_user.id) or not check_spam(message.from_user.id):
+    if is_admin(message.from_user.id):
         return
 
     user = message.from_user
     photo = message.photo[-1]
     section = user_section.get(user.id, "📸 ФОТО")
+    
+    request_data = {
+        "user_id": user.id,
+        "section": section,
+        "message": f"📸 Фото: {message.caption or 'Без подписи'}",
+        "status": "NEW",
+        "time": str(datetime.now())
+    }
+    save_request(user.id, request_data)
 
     request_text = format_request(
         user=user,
         section=section,
-        message_text=f"📸 Фото: {message.caption or 'Без подписи'}"
+        message_text=f"📸 Фото: {message.caption or 'Без подписи'}",
+        status="NEW"
     )
 
-    kb = InlineKeyboardMarkup().add(
+    kb = InlineKeyboardMarkup(row_width=2).add(
+        InlineKeyboardButton("🟡 В работу", callback_data=f"work_{user.id}"),
+        InlineKeyboardButton("🟢 Закрыть", callback_data=f"done_{user.id}"),
         InlineKeyboardButton("💬 Ответить", callback_data=f"reply_{user.id}")
     )
 
@@ -1093,19 +1188,31 @@ async def handle_photo(message: types.Message):
 # ================ ТЕКСТОВЫЕ ЗАЯВКИ ================
 @dp.message_handler()
 async def handle_text(message: types.Message):
-    if message.text.startswith('/') or is_admin(message.from_user.id) or not check_spam(message.from_user.id):
+    if message.text.startswith('/') or is_admin(message.from_user.id):
         return
 
     user = message.from_user
     section = user_section.get(user.id, "📬 ОБЩАЯ ЗАЯВКА")
+    
+    request_data = {
+        "user_id": user.id,
+        "section": section,
+        "message": message.text,
+        "status": "NEW",
+        "time": str(datetime.now())
+    }
+    save_request(user.id, request_data)
 
     request_text = format_request(
         user=user,
         section=section,
-        message_text=message.text
+        message_text=message.text,
+        status="NEW"
     )
 
-    kb = InlineKeyboardMarkup().add(
+    kb = InlineKeyboardMarkup(row_width=2).add(
+        InlineKeyboardButton("🟡 В работу", callback_data=f"work_{user.id}"),
+        InlineKeyboardButton("🟢 Закрыть", callback_data=f"done_{user.id}"),
         InlineKeyboardButton("💬 Ответить", callback_data=f"reply_{user.id}")
     )
 
@@ -1116,7 +1223,7 @@ async def handle_text(message: types.Message):
             parse_mode="HTML",
             reply_markup=kb
         )
-        await message.answer("✅ Спасибо! Заявка отправлена.", reply_markup=main_kb)
+        await message.answer("✅ Спасибо! Ваша заявка отправлена.", reply_markup=main_kb)
     except Exception as e:
         print(f"Ошибка: {e}")
         await message.answer("✅ Спасибо!", reply_markup=main_kb)
