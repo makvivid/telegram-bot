@@ -8,8 +8,10 @@ from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters import Text
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.dispatcher.filters.state import State, StatesGroup
+from aiogram.utils import exceptions
 from aiohttp import web
 from datetime import datetime, timedelta
+import aiohttp
 
 # ================ НАСТРОЙКИ ================
 API_TOKEN = os.getenv("BOT_TOKEN")
@@ -86,14 +88,12 @@ def save_request(user_id, request_data):
     with open(REQUESTS_FILE, "w") as f:
         json.dump(requests, f, indent=2, ensure_ascii=False)
 
-# ================ АНТИСПАМ (ДЛЯ АДМИНА НЕ РАБОТАЕТ) ================
+# ================ АНТИСПАМ ================
 last_message_time = {}
 
 def check_spam(user_id):
-    # Для админа антиспам не нужен
     if user_id == ADMIN_ID:
         return True
-        
     now = datetime.now()
     if user_id in last_message_time:
         if now - last_message_time[user_id] < timedelta(seconds=2):
@@ -114,7 +114,6 @@ class RequestStates(StatesGroup):
 
 # ================ ЛОГОТИП ================
 from aiogram.types import InputFile
-import os
 
 LOGO_PATH = "logo.png"
 
@@ -1259,7 +1258,6 @@ async def handle_voice(message: types.Message):
     }
     save_request(user.id, request_data)
 
-    # Для голосовых caption не поддерживается, отправляем отдельно
     kb = InlineKeyboardMarkup(row_width=2).add(
         InlineKeyboardButton("🟡 В работу", callback_data=f"work_{user.id}"),
         InlineKeyboardButton("🟢 Закрыть", callback_data=f"done_{user.id}"),
@@ -1272,7 +1270,6 @@ async def handle_voice(message: types.Message):
             voice.file_id,
             reply_markup=kb
         )
-        # Отправляем текстовое описание отдельно
         desc_text = format_request(
             user=user,
             section=section,
@@ -1456,7 +1453,6 @@ async def show_request_status(message: types.Message):
         await message.answer("📭 Нет заявок", reply_markup=get_admin_kb())
         return
     
-    # Считаем статистику
     new_count = 0
     work_count = 0
     done_count = 0
@@ -1470,7 +1466,6 @@ async def show_request_status(message: types.Message):
         elif status == 'DONE':
             done_count += 1
     
-    # Формируем текст
     text = (
         f"📊 <b>СТАТУСЫ ЗАЯВОК</b>\n\n"
         f"🟡 NEW (новые): {new_count}\n"
@@ -1480,7 +1475,6 @@ async def show_request_status(message: types.Message):
         f"📋 <b>Последние 5 заявок:</b>\n"
     )
     
-    # Добавляем последние 5 заявок
     sorted_requests = sorted(requests.items(), key=lambda x: x[1].get('time', ''), reverse=True)[:5]
     
     for user_id_str, data in sorted_requests:
@@ -1494,7 +1488,6 @@ async def show_request_status(message: types.Message):
         
         text += f"\n{status_emoji} <b>ID {user_id}</b> — {section_short} [{time_str}]"
     
-    # Кнопки для управления
     kb = InlineKeyboardMarkup(row_width=2)
     kb.add(
         InlineKeyboardButton("🔄 Обновить", callback_data="refresh_status"),
@@ -1526,7 +1519,6 @@ async def list_done(callback: types.CallbackQuery):
     await list_requests_by_status(callback.message, "DONE")
 
 async def list_requests_by_status(message, target_status):
-    """Показывает все заявки с определённым статусом"""
     requests = load_requests()
     
     filtered = []
@@ -1547,7 +1539,7 @@ async def list_requests_by_status(message, target_status):
     
     text = f"<b>{status_name} — {len(filtered)} заявок</b>\n\n"
     
-    for user_id_str, data in filtered[-10:]:  # последние 10
+    for user_id_str, data in filtered[-10:]:
         user_id = int(user_id_str)
         section = data.get('section', 'Неизвестно')
         time_str = data.get('time', '')[:16]
@@ -1615,6 +1607,54 @@ async def auto_control():
                 except:
                     pass
 
+# ================ НОВАЯ ФУНКЦИЯ ДЛЯ ЗАПУСКА С ЗАЩИТОЙ ================
+async def start_bot_with_retry():
+    """Запускает бота с обработкой ошибок сети и повторными попытками."""
+    retries = 0
+    max_retries = 10
+    base_delay = 5
+
+    while retries < max_retries:
+        try:
+            print(f"🔄 Попытка запуска #{retries + 1}...")
+            await bot.delete_webhook(drop_pending_updates=True)
+            
+            await asyncio.gather(
+                dp.start_polling(),
+                run_web_server(),
+                auto_control()
+            )
+            break
+
+        except (aiohttp.client_exceptions.ClientConnectorError, 
+                aiohttp.client_exceptions.ServerDisconnectedError,
+                exceptions.NetworkError) as e:
+            retries += 1
+            wait_time = base_delay * (2 ** (retries - 1))
+            print(f"⚠️ Ошибка сети: {e}. Повтор через {wait_time} сек (попытка {retries}/{max_retries})")
+            await asyncio.sleep(wait_time)
+
+        except exceptions.RetryAfter as e:
+            wait_time = e.retry_after + 1
+            print(f"⚠️ Flood control: нужно подождать {wait_time} сек.")
+            await asyncio.sleep(wait_time)
+
+        except exceptions.TelegramAPIError as e:
+            if "Bad Gateway" in str(e) or "Gateway" in str(e):
+                retries += 1
+                wait_time = base_delay * (2 ** (retries - 1))
+                print(f"⚠️ Ошибка шлюза (Bad Gateway): {e}. Повтор через {wait_time} сек")
+                await asyncio.sleep(wait_time)
+            else:
+                raise e
+
+        except Exception as e:
+            print(f"❌ Критическая ошибка: {e}")
+            raise e
+
+    else:
+        print("❌ Не удалось запустить бота после нескольких попыток.")
+
 # ================ ВЕБ-СЕРВЕР ================
 async def handle_web(request):
     return web.Response(text="🤖 Бот ДОНАКВА работает!")
@@ -1635,26 +1675,10 @@ async def run_web_server():
     await asyncio.Event().wait()
 
 # ================ ЗАПУСК ================
-async def main():
-    print("🤖 Бот ДОНАКВА запущен")
-    print(f"👤 Админ ID: {ADMIN_ID}")
-    print(f"👥 Всего пользователей: {len(load_users())}")
-    print(f"🖼 Логотип: Загружен из файла logo.png")
-    print(f"📞 Телефон: {PHONE_NUMBER} (кликабельный)")
-    print(f"📍 Адрес: {ADDRESS} (кликабельный)")
-
-    await bot.delete_webhook(drop_pending_updates=True)
-
-    await asyncio.gather(
-        dp.start_polling(),
-        run_web_server(),
-        auto_control()
-    )
-
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        asyncio.run(start_bot_with_retry())
     except KeyboardInterrupt:
         print("\n👋 Бот остановлен")
     except Exception as e:
-        print(f"\n❌ Ошибка: {e}")
+        print(f"\n❌ Неисправимая ошибка: {e}")
