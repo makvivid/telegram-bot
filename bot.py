@@ -13,6 +13,19 @@ from aiohttp import web
 from datetime import datetime, timedelta
 import aiohttp
 
+# ================ ЦВЕТНЫЕ ЛОГИ ================
+class LogColors:
+    OK = '\033[92m'    # зеленый
+    WARN = '\033[93m'   # желтый
+    ERROR = '\033[91m'  # красный
+    INFO = '\033[96m'   # голубой
+    RESET = '\033[0m'
+
+def log_info(msg): print(f"{LogColors.INFO}[INFO]{LogColors.RESET} {msg}")
+def log_ok(msg): print(f"{LogColors.OK}[OK]{LogColors.RESET} {msg}")
+def log_warn(msg): print(f"{LogColors.WARN}[WARN]{LogColors.RESET} {msg}")
+def log_error(msg): print(f"{LogColors.ERROR}[ERROR]{LogColors.RESET} {msg}")
+
 # ================ НАСТРОЙКИ ================
 API_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = 488352806
@@ -29,6 +42,27 @@ USERS_FILE = "users.json"
 NEWSLETTERS_FILE = "newsletters.json"
 REQUESTS_FILE = "requests.json"
 
+# ================ КЭШИРОВАНИЕ ПОЛЬЗОВАТЕЛЕЙ ================
+users_cache = None
+users_cache_time = None
+CACHE_TTL = 60  # секунд
+
+def load_users_cached():
+    global users_cache, users_cache_time
+    now = datetime.now()
+    
+    if users_cache is not None and users_cache_time and (now - users_cache_time).seconds < CACHE_TTL:
+        return users_cache
+    
+    users_cache = load_users()
+    users_cache_time = now
+    return users_cache
+
+def invalidate_users_cache():
+    global users_cache, users_cache_time
+    users_cache = None
+    users_cache_time = None
+
 def load_users():
     try:
         with open(USERS_FILE, "r") as f:
@@ -42,6 +76,7 @@ def save_user(user_id, username, full_name, phone=None):
         if user["id"] == user_id:
             if phone:
                 user["phone"] = phone
+            invalidate_users_cache()
             return
     users.append({
         "id": user_id,
@@ -52,6 +87,8 @@ def save_user(user_id, username, full_name, phone=None):
     })
     with open(USERS_FILE, "w") as f:
         json.dump(users, f, indent=2, ensure_ascii=False)
+    invalidate_users_cache()
+    log_ok(f"Новый пользователь сохранён: {user_id}")
 
 def load_newsletters():
     try:
@@ -67,6 +104,7 @@ def save_newsletter(newsletter_data):
     newsletters.append(newsletter_data)
     with open(NEWSLETTERS_FILE, "w") as f:
         json.dump(newsletters, f, indent=2, ensure_ascii=False)
+    log_ok(f"Рассылка сохранена, ID: {newsletter_data['id']}")
     return newsletter_data['id']
 
 def delete_newsletter(newsletter_id):
@@ -74,6 +112,7 @@ def delete_newsletter(newsletter_id):
     newsletters = [n for n in newsletters if n.get('id') != newsletter_id]
     with open(NEWSLETTERS_FILE, "w") as f:
         json.dump(newsletters, f, indent=2, ensure_ascii=False)
+    log_ok(f"Рассылка удалена, ID: {newsletter_id}")
 
 def load_requests():
     try:
@@ -82,11 +121,36 @@ def load_requests():
     except:
         return {}
 
-def save_request(user_id, request_data):
+def save_request(user_id, request_data, message_id=None, chat_id=None):
     requests = load_requests()
+    if message_id and chat_id:
+        chat_id_str = str(chat_id)
+        if chat_id_str.startswith('-100'):
+            chat_id_str = chat_id_str[4:]
+        request_data['message_link'] = f"https://t.me/c/{chat_id_str}/{message_id}"
     requests[str(user_id)] = request_data
     with open(REQUESTS_FILE, "w") as f:
         json.dump(requests, f, indent=2, ensure_ascii=False)
+
+# ================ АВТООЧИСТКА СТАРЫХ ЗАЯВОК ================
+def cleanup_old_requests(days=30):
+    """Удаляет заявки старше N дней"""
+    requests = load_requests()
+    now = datetime.now()
+    new_requests = {}
+    
+    for user_id, data in requests.items():
+        try:
+            req_time = datetime.fromisoformat(data['time'])
+            if (now - req_time).days < days:
+                new_requests[user_id] = data
+        except:
+            pass
+    
+    with open(REQUESTS_FILE, "w") as f:
+        json.dump(new_requests, f, indent=2, ensure_ascii=False)
+    
+    log_info(f"Очистка: удалено {len(requests) - len(new_requests)} старых заявок")
 
 # ================ АНТИСПАМ ================
 last_message_time = {}
@@ -137,7 +201,7 @@ async def send_logo(chat_id, caption, reply_markup=None, parse_mode="HTML"):
             )
         return True
     except Exception as e:
-        print(f"Ошибка логотипа: {e}")
+        log_error(f"Ошибка логотипа: {e}")
         try:
             await bot.send_message(
                 chat_id=chat_id,
@@ -278,9 +342,7 @@ def get_admin_kb():
     kb.add(
         KeyboardButton("📢 Новая рассылка"),
         KeyboardButton("📋 Мои рассылки"),
-        KeyboardButton("👥 Статистика"),
-        KeyboardButton("📊 Статусы заявок"),
-        KeyboardButton("🔙 Назад в главное меню")
+        KeyboardButton("👥 Статистика")
     )
     return kb
 
@@ -333,7 +395,7 @@ async def show_stats(message: types.Message):
     if not is_admin(message.from_user.id):
         return
 
-    users = load_users()
+    users = load_users_cached()
     newsletters = load_newsletters()
     
     now = datetime.now()
@@ -363,9 +425,23 @@ async def show_stats(message: types.Message):
         f"🆕 Новых за сегодня: {new_today}\n"
         f"📅 Новых за неделю: {new_week}\n"
         f"📆 Новых за месяц: {new_month}\n\n"
-        f"📨 Всего рассылок: {len(newsletters)}"
+        f"📨 Всего рассылок: {len(newsletters)}\n\n"
+        f"👤 <b>Последние 5 пользователей:</b>\n"
     )
-
+    
+    for user in users[-5:]:
+        name = user['full_name'][:20]
+        user_id = user['id']
+        username = user.get('username', '')
+        
+        if username:
+            user_ref = f"@{username}"
+        else:
+            user_ref = f'<a href="tg://user?id={user_id}">{name}</a>'
+        
+        joined = user.get('joined_date', '')[:10]
+        text += f"• {user_ref} — {joined}\n"
+    
     await message.answer(text, parse_mode="HTML", reply_markup=get_admin_kb())
 
 # ================ РАССЫЛКА ================
@@ -419,7 +495,7 @@ async def get_newsletter_content(message: types.Message, state: FSMContext):
         InlineKeyboardButton("❌ Отмена", callback_data="cancel_news")
     )
 
-    users = load_users()
+    users = load_users_cached()
     await message.answer(
         f"👥 Будет отправлено: <b>{len(users)}</b>\n\nОтправить?",
         parse_mode="HTML",
@@ -435,7 +511,7 @@ async def send_newsletter(callback_query: types.CallbackQuery, state: FSMContext
         await state.finish()
         return
 
-    users = load_users()
+    users = load_users_cached()
     status_msg = await bot.send_message(
         callback_query.from_user.id,
         f"📤 Отправка {len(users)} пользователям..."
@@ -529,12 +605,28 @@ async def delete_newsletter_callback(callback_query: types.CallbackQuery):
         return
     
     newsletter_id = callback_query.data.replace('del_news_', '')
-    delete_newsletter(newsletter_id)
+    
+    kb = InlineKeyboardMarkup(row_width=2).add(
+        InlineKeyboardButton("✅ Да, удалить", callback_data=f"confirm_del_{newsletter_id}"),
+        InlineKeyboardButton("❌ Нет", callback_data="cancel_del")
+    )
     
     await bot.send_message(
         callback_query.from_user.id,
-        f"✅ Рассылка удалена"
+        "❓ Точно удалить эту рассылку?",
+        reply_markup=kb
     )
+
+@dp.callback_query_handler(lambda c: c.data and c.data.startswith('confirm_del_'))
+async def confirm_delete(callback_query: types.CallbackQuery):
+    newsletter_id = callback_query.data.replace('confirm_del_', '')
+    delete_newsletter(newsletter_id)
+    await bot.answer_callback_query(callback_query.id, "✅ Рассылка удалена")
+    await callback_query.message.edit_text("✅ Рассылка удалена")
+
+@dp.callback_query_handler(lambda c: c.data == "cancel_del")
+async def cancel_delete(callback_query: types.CallbackQuery):
+    await bot.answer_callback_query(callback_query.id, "❌ Отменено")
     await callback_query.message.delete()
 
 @dp.callback_query_handler(lambda c: c.data == "list_newsletters")
@@ -1141,7 +1233,7 @@ async def reply_to_user(message: types.Message):
 
     except Exception as e:
         await message.answer(f"❌ Ошибка при отправке: {e}")
-        print(f"Ошибка отправки ответа: {e}")
+        log_error(f"Ошибка отправки ответа: {e}")
 
 # ================ ОБРАБОТЧИК ФОТО ================
 @dp.message_handler(content_types=['photo'])
@@ -1160,7 +1252,7 @@ async def handle_photo(message: types.Message):
         "status": "NEW",
         "time": str(datetime.now())
     }
-    save_request(user.id, request_data)
+    save_request(user.id, request_data, message.message_id, message.chat.id)
 
     request_text = format_request(
         user=user,
@@ -1185,7 +1277,7 @@ async def handle_photo(message: types.Message):
         )
         await message.answer("✅ Спасибо! Фото получено.", reply_markup=main_kb)
     except Exception as e:
-        print(f"Ошибка фото: {e}")
+        log_error(f"Ошибка фото: {e}")
         await message.answer("✅ Спасибо!", reply_markup=main_kb)
 
     if user.id in user_section:
@@ -1208,7 +1300,7 @@ async def handle_video(message: types.Message):
         "status": "NEW",
         "time": str(datetime.now())
     }
-    save_request(user.id, request_data)
+    save_request(user.id, request_data, message.message_id, message.chat.id)
 
     request_text = format_request(
         user=user,
@@ -1233,7 +1325,7 @@ async def handle_video(message: types.Message):
         )
         await message.answer("✅ Спасибо! Видео получено.", reply_markup=main_kb)
     except Exception as e:
-        print(f"Ошибка видео: {e}")
+        log_error(f"Ошибка видео: {e}")
         await message.answer("✅ Спасибо!", reply_markup=main_kb)
 
     if user.id in user_section:
@@ -1256,7 +1348,7 @@ async def handle_voice(message: types.Message):
         "status": "NEW",
         "time": str(datetime.now())
     }
-    save_request(user.id, request_data)
+    save_request(user.id, request_data, message.message_id, message.chat.id)
 
     kb = InlineKeyboardMarkup(row_width=2).add(
         InlineKeyboardButton("🟡 В работу", callback_data=f"work_{user.id}"),
@@ -1283,7 +1375,7 @@ async def handle_voice(message: types.Message):
         )
         await message.answer("✅ Спасибо! Голосовое получено.", reply_markup=main_kb)
     except Exception as e:
-        print(f"Ошибка голосового: {e}")
+        log_error(f"Ошибка голосового: {e}")
         await message.answer("✅ Спасибо!", reply_markup=main_kb)
 
     if user.id in user_section:
@@ -1309,7 +1401,7 @@ async def handle_document(message: types.Message):
         "status": "NEW",
         "time": str(datetime.now())
     }
-    save_request(user.id, request_data)
+    save_request(user.id, request_data, message.message_id, message.chat.id)
 
     request_text = format_request(
         user=user,
@@ -1334,7 +1426,7 @@ async def handle_document(message: types.Message):
         )
         await message.answer("✅ Спасибо! Файл получен.", reply_markup=main_kb)
     except Exception as e:
-        print(f"Ошибка документа: {e}")
+        log_error(f"Ошибка документа: {e}")
         await message.answer("✅ Спасибо!", reply_markup=main_kb)
 
     if user.id in user_section:
@@ -1356,7 +1448,7 @@ async def handle_text(message: types.Message):
         "status": "NEW",
         "time": str(datetime.now())
     }
-    save_request(user.id, request_data)
+    save_request(user.id, request_data, message.message_id, message.chat.id)
 
     request_text = format_request(
         user=user,
@@ -1380,7 +1472,7 @@ async def handle_text(message: types.Message):
         )
         await message.answer("✅ Спасибо! Ваша заявка отправлена.", reply_markup=main_kb)
     except Exception as e:
-        print(f"Ошибка: {e}")
+        log_error(f"Ошибка: {e}")
         await message.answer("✅ Спасибо!", reply_markup=main_kb)
 
     if user.id in user_section:
@@ -1438,115 +1530,10 @@ async def handle_reply_text(message: types.Message, state: FSMContext):
 
     except Exception as e:
         await message.answer(f"❌ Ошибка при отправке: {e}")
+        log_error(f"Ошибка отправки ответа: {e}")
 
     reply_data.pop(message.from_user.id, None)
     await state.finish()
-
-# ================ СТАТУСЫ ЗАЯВОК (НОВАЯ ВЕРСИЯ) ================
-@dp.message_handler(Text(equals="📊 Статусы заявок"))
-async def show_request_status(message: types.Message):
-    if not is_admin(message.from_user.id):
-        return
-    
-    requests = load_requests()
-    if not requests:
-        await message.answer("📭 Нет заявок", reply_markup=get_admin_kb())
-        return
-    
-    new_count = 0
-    work_count = 0
-    done_count = 0
-    
-    for r in requests.values():
-        status = r.get('status', 'NEW')
-        if status == 'NEW':
-            new_count += 1
-        elif status == 'WORK':
-            work_count += 1
-        elif status == 'DONE':
-            done_count += 1
-    
-    text = (
-        f"📊 <b>СТАТУСЫ ЗАЯВОК</b>\n\n"
-        f"🟡 NEW (новые): {new_count}\n"
-        f"🟠 WORK (в работе): {work_count}\n"
-        f"🟢 DONE (закрытые): {done_count}\n"
-        f"📦 Всего заявок: {len(requests)}\n\n"
-        f"📋 <b>Последние 5 заявок:</b>\n"
-    )
-    
-    sorted_requests = sorted(requests.items(), key=lambda x: x[1].get('time', ''), reverse=True)[:5]
-    
-    for user_id_str, data in sorted_requests:
-        user_id = int(user_id_str)
-        section = data.get('section', 'Неизвестно')
-        status = data.get('status', 'NEW')
-        time_str = data.get('time', '')[:16]
-        
-        status_emoji = "🟡" if status == 'NEW' else "🟠" if status == 'WORK' else "🟢" if status == 'DONE' else "⚪"
-        section_short = section[:20] + '...' if len(section) > 20 else section
-        
-        text += f"\n{status_emoji} <b>ID {user_id}</b> — {section_short} [{time_str}]"
-    
-    kb = InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        InlineKeyboardButton("🔄 Обновить", callback_data="refresh_status"),
-        InlineKeyboardButton("📋 NEW", callback_data="list_new"),
-        InlineKeyboardButton("📋 WORK", callback_data="list_work"),
-        InlineKeyboardButton("📋 DONE", callback_data="list_done")
-    )
-    
-    await message.answer(text, parse_mode="HTML", reply_markup=kb)
-
-@dp.callback_query_handler(lambda c: c.data == "refresh_status")
-async def refresh_status(callback: types.CallbackQuery):
-    await bot.answer_callback_query(callback.id)
-    await show_request_status(callback.message)
-
-@dp.callback_query_handler(lambda c: c.data == "list_new")
-async def list_new(callback: types.CallbackQuery):
-    await bot.answer_callback_query(callback.id)
-    await list_requests_by_status(callback.message, "NEW")
-
-@dp.callback_query_handler(lambda c: c.data == "list_work")
-async def list_work(callback: types.CallbackQuery):
-    await bot.answer_callback_query(callback.id)
-    await list_requests_by_status(callback.message, "WORK")
-
-@dp.callback_query_handler(lambda c: c.data == "list_done")
-async def list_done(callback: types.CallbackQuery):
-    await bot.answer_callback_query(callback.id)
-    await list_requests_by_status(callback.message, "DONE")
-
-async def list_requests_by_status(message, target_status):
-    requests = load_requests()
-    
-    filtered = []
-    for user_id_str, data in requests.items():
-        if data.get('status') == target_status:
-            filtered.append((user_id_str, data))
-    
-    if not filtered:
-        await bot.send_message(
-            message.chat.id,
-            f"📭 Нет заявок со статусом {target_status}",
-            reply_markup=get_admin_kb()
-        )
-        return
-    
-    status_names = {"NEW": "🟡 NEW", "WORK": "🟠 WORK", "DONE": "🟢 DONE"}
-    status_name = status_names.get(target_status, target_status)
-    
-    text = f"<b>{status_name} — {len(filtered)} заявок</b>\n\n"
-    
-    for user_id_str, data in filtered[-10:]:
-        user_id = int(user_id_str)
-        section = data.get('section', 'Неизвестно')
-        time_str = data.get('time', '')[:16]
-        
-        text += f"👤 <code>{user_id}</code> — {section} [{time_str}]\n"
-    
-    await bot.send_message(message.chat.id, text, parse_mode="HTML", reply_markup=get_admin_kb())
 
 # ================ ОБРАБОТЧИК СТАТУСОВ ================
 @dp.callback_query_handler(lambda c: c.data.startswith('work_'))
@@ -1577,30 +1564,48 @@ async def set_done(callback: types.CallbackQuery):
 
 # ================ АВТОКОНТРОЛЬ (ИСПРАВЛЕННЫЙ) ================
 async def auto_control():
+    last_cleanup = datetime.now().date()
+    
     while True:
-        await asyncio.sleep(60)  # проверяем каждую минуту
+        await asyncio.sleep(60)
         
         requests = load_requests()
         now = datetime.now()
+        
+        # Очистка старых заявок раз в день
+        if now.date() != last_cleanup:
+            cleanup_old_requests()
+            last_cleanup = now.date()
         
         for user_id_str, data in requests.items():
             try:
                 user_id = int(user_id_str)
                 status = data.get('status', 'NEW')
-                reminded = data.get('reminded', False)  # проверяем, отправляли ли уже напоминание пользователю
-                admin_reminded = data.get('admin_reminded', False)  # проверяем, отправляли ли напоминание админу
+                reminded = data.get('reminded', False)
+                admin_reminded = data.get('admin_reminded', False)
                 request_time = datetime.fromisoformat(data['time'])
                 delta = now - request_time
                 
                 # Напоминание админу через 10 минут (только один раз)
                 if status == 'NEW' and delta > timedelta(minutes=10) and not admin_reminded:
-                    await bot.send_message(
-                        ADMIN_ID,
-                        f"⚠️ Заявка от пользователя {user_id} без ответа 10 минут!"
-                    )
+                    message_link = data.get('message_link', '')
+                    if message_link:
+                        await bot.send_message(
+                            ADMIN_ID,
+                            f"⚠️ <a href='{message_link}'>Заявка от пользователя {user_id}</a> без ответа 10 минут!\n"
+                            f"👆 Нажми на ссылку выше, чтобы перейти к сообщению",
+                            parse_mode="HTML"
+                        )
+                    else:
+                        await bot.send_message(
+                            ADMIN_ID,
+                            f"⚠️ Заявка от пользователя {user_id} без ответа 10 минут!\n"
+                            f"🔍 ID для поиска: <code>{user_id}</code>",
+                            parse_mode="HTML"
+                        )
                     data['admin_reminded'] = True
                     save_request(user_id, data)
-                    print(f"✅ Напоминание админу отправлено для заявки {user_id}")
+                    log_info(f"Напоминание админу отправлено для заявки {user_id}")
                 
                 # Напоминание пользователю через 24 часа (только ОДИН РАЗ!)
                 if status != 'DONE' and delta > timedelta(hours=24) and not reminded:
@@ -1610,14 +1615,13 @@ async def auto_control():
                             "🔔 Напоминаем о вашей заявке в ДОНАКВА.\n"
                             "Всё ещё актуально? Напишите, и мы ответим!"
                         )
-                        # Помечаем, что напоминание отправлено
                         data['reminded'] = True
                         save_request(user_id, data)
-                        print(f"✅ Напоминание отправлено пользователю {user_id}")
+                        log_info(f"Напоминание отправлено пользователю {user_id}")
                     except Exception as e:
-                        print(f"❌ Ошибка отправки пользователю {user_id}: {e}")
+                        log_error(f"Ошибка отправки пользователю {user_id}: {e}")
             except Exception as e:
-                print(f"❌ Ошибка обработки пользователя {user_id_str}: {e}")
+                log_error(f"Ошибка обработки пользователя {user_id_str}: {e}")
 
 # ================ НОВАЯ ФУНКЦИЯ ДЛЯ ЗАПУСКА С ЗАЩИТОЙ ================
 async def start_bot_with_retry():
@@ -1628,7 +1632,7 @@ async def start_bot_with_retry():
 
     while retries < max_retries:
         try:
-            print(f"🔄 Попытка запуска #{retries + 1}...")
+            log_info(f"Попытка запуска #{retries + 1}...")
             await bot.delete_webhook(drop_pending_updates=True)
             
             await asyncio.gather(
@@ -1643,29 +1647,29 @@ async def start_bot_with_retry():
                 exceptions.NetworkError) as e:
             retries += 1
             wait_time = base_delay * (2 ** (retries - 1))
-            print(f"⚠️ Ошибка сети: {e}. Повтор через {wait_time} сек (попытка {retries}/{max_retries})")
+            log_warn(f"Ошибка сети: {e}. Повтор через {wait_time} сек (попытка {retries}/{max_retries})")
             await asyncio.sleep(wait_time)
 
         except exceptions.RetryAfter as e:
             wait_time = e.retry_after + 1
-            print(f"⚠️ Flood control: нужно подождать {wait_time} сек.")
+            log_warn(f"Flood control: нужно подождать {wait_time} сек.")
             await asyncio.sleep(wait_time)
 
         except exceptions.TelegramAPIError as e:
             if "Bad Gateway" in str(e) or "Gateway" in str(e):
                 retries += 1
                 wait_time = base_delay * (2 ** (retries - 1))
-                print(f"⚠️ Ошибка шлюза (Bad Gateway): {e}. Повтор через {wait_time} сек")
+                log_warn(f"Ошибка шлюза (Bad Gateway): {e}. Повтор через {wait_time} сек")
                 await asyncio.sleep(wait_time)
             else:
                 raise e
 
         except Exception as e:
-            print(f"❌ Критическая ошибка: {e}")
+            log_error(f"Критическая ошибка: {e}")
             raise e
 
     else:
-        print("❌ Не удалось запустить бота после нескольких попыток.")
+        log_error("Не удалось запустить бота после нескольких попыток.")
 
 # ================ ВЕБ-СЕРВЕР ================
 async def handle_web(request):
@@ -1677,7 +1681,7 @@ async def run_web_server():
     app.router.add_get('/health', handle_web)
 
     port = int(os.environ.get('PORT', 10000))
-    print(f"🌐 Веб-сервер запущен на порту {port}")
+    log_info(f"Веб-сервер запущен на порту {port}")
 
     runner = web.AppRunner(app)
     await runner.setup()
@@ -1691,6 +1695,6 @@ if __name__ == "__main__":
     try:
         asyncio.run(start_bot_with_retry())
     except KeyboardInterrupt:
-        print("\n👋 Бот остановлен")
+        log_info("Бот остановлен")
     except Exception as e:
-        print(f"\n❌ Неисправимая ошибка: {e}")
+        log_error(f"Неисправимая ошибка: {e}")
