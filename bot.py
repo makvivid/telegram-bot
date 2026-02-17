@@ -1575,37 +1575,49 @@ async def set_done(callback: types.CallbackQuery):
     await callback.answer("✅ Заявка закрыта")
     await callback.message.edit_reply_markup()
 
-# ================ АВТОКОНТРОЛЬ ================
+# ================ АВТОКОНТРОЛЬ (ИСПРАВЛЕННЫЙ) ================
 async def auto_control():
     while True:
-        await asyncio.sleep(60)
+        await asyncio.sleep(60)  # проверяем каждую минуту
         
         requests = load_requests()
         now = datetime.now()
         
         for user_id_str, data in requests.items():
-            user_id = int(user_id_str)
-            status = data.get('status', 'NEW')
-            request_time = datetime.fromisoformat(data['time'])
-            delta = now - request_time
-            
-            if status == 'NEW' and delta > timedelta(minutes=10):
-                await bot.send_message(
-                    ADMIN_ID,
-                    f"⚠️ Заявка от пользователя {user_id} без ответа 10 минут!"
-                )
-                data['status'] = 'REMINDED'
-                save_request(user_id, data)
-            
-            if status != 'DONE' and delta > timedelta(hours=24):
-                try:
+            try:
+                user_id = int(user_id_str)
+                status = data.get('status', 'NEW')
+                reminded = data.get('reminded', False)  # проверяем, отправляли ли уже напоминание пользователю
+                admin_reminded = data.get('admin_reminded', False)  # проверяем, отправляли ли напоминание админу
+                request_time = datetime.fromisoformat(data['time'])
+                delta = now - request_time
+                
+                # Напоминание админу через 10 минут (только один раз)
+                if status == 'NEW' and delta > timedelta(minutes=10) and not admin_reminded:
                     await bot.send_message(
-                        user_id,
-                        "🔔 Напоминаем о вашей заявке в ДОНАКВА.\n"
-                        "Всё ещё актуально? Напишите, и мы ответим!"
+                        ADMIN_ID,
+                        f"⚠️ Заявка от пользователя {user_id} без ответа 10 минут!"
                     )
-                except:
-                    pass
+                    data['admin_reminded'] = True
+                    save_request(user_id, data)
+                    print(f"✅ Напоминание админу отправлено для заявки {user_id}")
+                
+                # Напоминание пользователю через 24 часа (только ОДИН РАЗ!)
+                if status != 'DONE' and delta > timedelta(hours=24) and not reminded:
+                    try:
+                        await bot.send_message(
+                            user_id,
+                            "🔔 Напоминаем о вашей заявке в ДОНАКВА.\n"
+                            "Всё ещё актуально? Напишите, и мы ответим!"
+                        )
+                        # Помечаем, что напоминание отправлено
+                        data['reminded'] = True
+                        save_request(user_id, data)
+                        print(f"✅ Напоминание отправлено пользователю {user_id}")
+                    except Exception as e:
+                        print(f"❌ Ошибка отправки пользователю {user_id}: {e}")
+            except Exception as e:
+                print(f"❌ Ошибка обработки пользователя {user_id_str}: {e}")
 
 # ================ НОВАЯ ФУНКЦИЯ ДЛЯ ЗАПУСКА С ЗАЩИТОЙ ================
 async def start_bot_with_retry():
