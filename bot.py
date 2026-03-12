@@ -108,7 +108,8 @@ def get_working_hours_message():
         "📅 Пн-Пт: 9:00 - 15:00\n"
         "📅 Сб и Вс: выходной\n\n"
         "✅ Ваша заявка сохранена!\n"
-        "Мы ответим в рабочее время."
+        "📞 Ответим в рабочее время.\n"
+        "💙 Иногда отвечаем и раньше!"
     )
 
 # ================ ПРОВЕРКА ТОКЕНА ================
@@ -168,6 +169,9 @@ def save_user(user_id, username, full_name, phone=None, source=None):
             is_new_user = False
             if phone:
                 user["phone"] = phone
+            # ✅ Записываем источник, если его ещё нет
+            if source and not user.get("source"):
+                user["source"] = source
             invalidate_users_cache()
             with open(USERS_FILE, "w") as f:
                 json.dump(users, f, indent=2, ensure_ascii=False)
@@ -615,7 +619,6 @@ def get_auto_reply_text(is_first_time=True):
                 "Мы свяжемся с вами в ближайшее время!\n\n"
                 f"📞 Телефон: {PHONE_NUMBER}\n"
                 f"📍 Адрес: {ADDRESS}\n"
-                "🏪 Самовывоз из магазина\n"
                 "🌐 Сайт: www.donaqua.pro"
             )
         else:
@@ -626,7 +629,6 @@ def get_auto_reply_text(is_first_time=True):
             f"{get_working_hours_message()}\n\n"
             f"📞 Телефон: {PHONE_NUMBER}\n"
             f"📍 Адрес: {ADDRESS}\n"
-            "🏪 Самовывоз из магазина\n"
             "🌐 Сайт: www.donaqua.pro"
         )
 
@@ -643,12 +645,12 @@ async def cmd_start(message: types.Message):
     
     # Получаем параметры после /start (UTM-метки)
     args = message.get_args()
-    source = None
     
-    if args:
-        source = args
-        save_analytics(source)
-        user_source[message.from_user.id] = source
+    # ✅ Если метки нет — считаем, что пришёл с сайта (виджет даёт только @username)
+    source = args if args else "website"
+    
+    save_analytics(source)
+    user_source[message.from_user.id] = source
     
     # Проверяем, новый ли пользователь
     is_new = save_user(
@@ -676,8 +678,7 @@ async def cmd_start(message: types.Message):
             "🔹 1000+ реализованных проектов\n"
             "🔹 Индивидуальный подход\n\n"
             f"📍 {ADDRESS_LINK}\n"
-            f"📞 {PHONE_LINK}\n"
-            "🏪 Самовывоз из магазина\n\n"
+            f"📞 {PHONE_LINK}\n\n"
             "Чем можем помочь? Выберите раздел 👇"
         )
     elif source == 'instagram':
@@ -688,8 +689,7 @@ async def cmd_start(message: types.Message):
             "🔹 1000+ реализованных проектов\n"
             "🔹 Индивидуальный подход\n\n"
             f"📍 {ADDRESS_LINK}\n"
-            f"📞 {PHONE_LINK}\n"
-            "🏪 Самовывоз из магазина\n\n"
+            f"📞 {PHONE_LINK}\n\n"
             "Выберите нужный раздел 👇"
         )
     elif source == 'shop':
@@ -711,8 +711,7 @@ async def cmd_start(message: types.Message):
             "🔹 1000+ реализованных проектов\n"
             "🔹 Индивидуальный подход\n\n"
             f"📍 {ADDRESS_LINK}\n"
-            f"📞 {PHONE_LINK}\n"
-            "🏪 Самовывоз из магазина\n\n"
+            f"📞 {PHONE_LINK}\n\n"
             "Выберите нужный раздел 👇"
         )
     elif source == 'ads':
@@ -724,8 +723,7 @@ async def cmd_start(message: types.Message):
             "🔹 1000+ реализованных проектов\n"
             "🔹 Индивидуальный подход\n\n"
             f"📍 {ADDRESS_LINK}\n"
-            f"📞 {PHONE_LINK}\n"
-            "🏪 Самовывоз из магазина\n\n"
+            f"📞 {PHONE_LINK}\n\n"
             "Выберите нужный раздел 👇"
         )
     else:
@@ -737,8 +735,7 @@ async def cmd_start(message: types.Message):
             "🔹 1000+ реализованных проектов\n"
             "🔹 Индивидуальный подход\n\n"
             f"📍 {ADDRESS_LINK}\n"
-            f"📞 {PHONE_LINK}\n"
-            "🏪 Самовывоз из магазина\n\n"
+            f"📞 {PHONE_LINK}\n\n"
             "Выберите нужный раздел 👇"
         )
 
@@ -884,20 +881,23 @@ async def show_stats(message: types.Message):
             user_ref = f'<a href="tg://user?id={user_id}">{name}</a>'
         
         joined = user.get('joined_date', '')[:10]
-        source_icon = ""
-        if user_source_data:
-            source_icons = {
-                'website': '🌐',
-                'instagram': '📸',
-                'facebook': '📘',
-                'vk': '💙',
-                'shop': '🏪',
-                'card': '💳',
-                'ads': '📢'
-            }
-            source_icon = source_icons.get(user_source_data, '📌') + " "
         
-        text += f"• {source_icon}{user_ref} — {joined}\n"
+        # 🔧 ИСПРАВЛЕНИЕ: Показываем источник
+        source_text = ""
+        if user_source_data:
+            source_names = {
+                'website': '🌐 Сайт',
+                'instagram': '📸 Instagram',
+                'facebook': '📘 Facebook',
+                'vk': '💙 VK',
+                'shop': '🏪 Магазин',
+                'card': '💳 Визитка',
+                'ads': '📢 Реклама',
+                'telegram': '✈️ Telegram'
+            }
+            source_text = f" ({source_names.get(user_source_data, user_source_data)})"
+        
+        text += f"• {user_ref} — {joined}{source_text}\n"
     
     await message.answer(text, parse_mode="HTML", reply_markup=get_admin_kb())
 
@@ -1482,7 +1482,6 @@ async def handle_select_system(message: types.Message):
         "• Специальные химреагенты\n"
         "• Безреагентные системы\n"
         "• Умягчение и аэрация\n\n"
-        "🏪 <b>Самовывоз</b> из нашего магазина\n\n"
         "👇 <b>Выберите ваши условия:</b>"
     )
     await message.answer(text, reply_markup=select_system_kb, parse_mode="HTML")
@@ -1652,8 +1651,6 @@ async def handle_pool(message: types.Message):
         "— автоматическая дозация химии\n"
         "— лестницы, поручни, аксессуары\n"
         "— комплекты для запуска бассейна\n\n"
-        "🏪 <b>Самовывоз</b> из магазина по адресу:\n"
-        f"📍 {ADDRESS}\n\n"
         "👇 <b>Выберите раздел:</b>"
     )
     await message.answer(text, reply_markup=pool_kb, parse_mode="HTML")
@@ -1685,7 +1682,6 @@ async def handle_pool_chemistry(message: types.Message):
         "📌 <i>Пример:\n"
         "«Нужен хлор в таблетках для бассейна 25 м³,\n"
         "зелёная вода, обрабатываю вручную»</i>\n\n"
-        "🏪 <b>Самовывоз</b> из нашего магазина!\n"
         "✅ Мы подберём дозировку и марку!"
     )
     await message.answer(text, reply_markup=back_kb, parse_mode="HTML")
@@ -1715,7 +1711,6 @@ async def handle_pool_equipment(message: types.Message):
         "📌 <i>Пример:\n"
         "«Песочный фильтр для бассейна 35 м³,\n"
         "старый сломался, бюджет средний»</i>\n\n"
-        "🏪 <b>Самовывоз</b> из магазина\n"
         "✅ Подберём совместимый аналог или оригинал в наличии!"
     )
     await message.answer(text, reply_markup=back_kb, parse_mode="HTML")
@@ -1742,7 +1737,6 @@ async def handle_pool_startup(message: types.Message):
         "📌 <i>Пример:\n"
         "«Нужен комплект для запуска бассейна 45 м³,\n"
         "песочный фильтр, вода из скважины»</i>\n\n"
-        "🏪 <b>Самовывоз</b> из магазина\n"
         "✅ Соберём стартовый набор химии + тест-полоски!"
     )
     await message.answer(text, reply_markup=back_kb, parse_mode="HTML")
@@ -1775,7 +1769,6 @@ async def handle_pool_custom(message: types.Message):
         "«Бассейн 60 м³, частный, бетонный.\n"
         "Нужен новый насос и автоматическая дозация хлора.\n"
         "Бюджет до 150 000 руб., срочно»</i>\n\n"
-        "🏪 <b>Самовывоз</b> из магазина\n"
         "✅ Подготовим коммерческое предложение!"
     )
     await message.answer(text, reply_markup=back_kb, parse_mode="HTML")
@@ -1807,7 +1800,6 @@ async def handle_about(message: types.Message):
         "⏰ <b>Режим работы:</b>\n"
         "Пн-Пт: 9:00 - 15:00\n"
         "Сб, Вс: выходной\n\n"
-        "🏪 <b>Самовывоз</b> товаров из магазина\n\n"
         f"📍 <b>Адрес:</b> {ADDRESS_LINK}\n"
         f"📞 <b>Телефон:</b> {PHONE_LINK}\n"
         "🌐 <b>Сайт:</b> www.donaqua.pro"
@@ -1934,7 +1926,6 @@ async def handle_request(message: types.Message):
         "• запросить подбор оборудования\n"
         "• узнать стоимость монтажа\n"
         "• прикрепить фото/документы\n\n"
-        "🏪 Товар — самовывоз из магазина\n\n"
         "✅ Специалист свяжется с вами!",
         reply_markup=back_kb
     )
