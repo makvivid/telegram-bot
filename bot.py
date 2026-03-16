@@ -12,7 +12,7 @@ from aiogram.dispatcher.filters import Text
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, InputFile
 from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.utils import exceptions
-from aiohttp import web, ClientTimeout
+from aiohttp import web
 from datetime import datetime, timedelta
 import aiohttp
 
@@ -117,10 +117,7 @@ if not API_TOKEN:
     raise ValueError("ERROR: BOT_TOKEN not set!")
 
 # ================ СОЗДАНИЕ БОТА С ТАЙМАУТОМ ================
-bot = Bot(
-    token=API_TOKEN,
-    timeout=ClientTimeout(total=10)  # 10 секунд максимум на любой запрос
-)
+bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
 
