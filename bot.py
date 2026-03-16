@@ -4,7 +4,16 @@ import json
 import re
 import csv
 import logging
+import socket
+import ssl
 from io import StringIO, BytesIO
+from datetime import datetime, timedelta
+
+import aiohttp
+from aiohttp import web, ClientTimeout, TCPConnector
+from aiohttp.resolver import AsyncResolver
+import certifi
+
 from aiogram import Bot, Dispatcher, types
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
@@ -12,9 +21,16 @@ from aiogram.dispatcher.filters import Text
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, InputFile
 from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.utils import exceptions
-from aiohttp import web
-from datetime import datetime, timedelta
-import aiohttp
+
+# ================ НАСТРОЙКИ СЕТИ ================
+# Кастомный DNS резолвер для стабильной работы
+CUSTOM_NAMESERVERS = ['8.8.8.8', '8.8.4.4', '1.1.1.1']  # Google DNS и Cloudflare DNS
+CONNECTION_TIMEOUT = 120  # Таймаут подключения (сек)
+TOTAL_TIMEOUT = 300       # Общий таймаут операции (сек)
+MAX_CONNECTIONS = 100     # Максимальное количество одновременных соединений
+KEEPALIVE_TIMEOUT = 30    # Таймаут keepalive
+RETRY_ATTEMPTS = 5        # Количество попыток при ошибках сети
+RETRY_DELAY = 5           # Задержка между попытками (сек)
 
 # ================ ЛОГИРОВАНИЕ В ФАЙЛ И КОНСОЛЬ ================
 logging.basicConfig(
@@ -50,6 +66,53 @@ def log_warn(msg):
 def log_error(msg): 
     print(f"{LogColors.ERROR}[ERROR]{LogColors.RESET} {msg}")
     logger.error(msg)
+
+# ================ СОЗДАНИЕ ОПТИМИЗИРОВАННОЙ СЕССИИ ДЛЯ БОТА ================
+def create_optimized_session():
+    """Создаёт оптимизированную сессию aiohttp с правильными настройками сети"""
+    
+    # Создаём кастомный резолвер с DNS серверами Google
+    resolver = AsyncResolver(nameservers=CUSTOM_NAMESERVERS)
+    
+    # Настраиваем SSL контекст
+    ssl_context = ssl.create_default_context(cafile=certifi.where())
+    ssl_context.check_hostname = True
+    ssl_context.verify_mode = ssl.CERT_REQUIRED
+    
+    # Создаём коннектор с оптимизированными настройками
+    connector = TCPConnector(
+        resolver=resolver,
+        ssl=ssl_context,
+        force_close=False,  # Не закрывать соединения сразу
+        enable_cleanup_closed=True,
+        ttl_dns_cache=300,  # Кэшировать DNS на 5 минут
+        limit=MAX_CONNECTIONS,  # Максимум соединений
+        limit_per_host=MAX_CONNECTIONS // 2,  # Лимит на хост
+        keepalive_timeout=KEEPALIVE_TIMEOUT,
+        verify_ssl=True,
+        family=socket.AF_INET  # Использовать IPv4
+    )
+    
+    # Увеличиваем таймауты
+    timeout = ClientTimeout(
+        total=TOTAL_TIMEOUT,
+        connect=CONNECTION_TIMEOUT,
+        sock_read=CONNECTION_TIMEOUT,
+        sock_connect=CONNECTION_TIMEOUT
+    )
+    
+    # Создаём сессию
+    session = aiohttp.ClientSession(
+        connector=connector,
+        timeout=timeout,
+        headers={
+            'User-Agent': 'Mozilla/5.0 (compatible; DonaquaBot/1.0)',
+            'Accept': 'application/json',
+            'Connection': 'keep-alive'
+        }
+    )
+    
+    return session
 
 # ================ НАСТРОЙКИ ================
 API_TOKEN = os.getenv("BOT_TOKEN")
@@ -116,9 +179,27 @@ def get_working_hours_message():
 if not API_TOKEN:
     raise ValueError("ERROR: BOT_TOKEN not set!")
 
-bot = Bot(token=API_TOKEN)
-storage = MemoryStorage()
-dp = Dispatcher(bot, storage=storage)
+# ================ ИНИЦИАЛИЗАЦИЯ БОТА С ОПТИМИЗИРОВАННОЙ СЕССИЕЙ ================
+try:
+    # Создаём оптимизированную сессию
+    session = create_optimized_session()
+    
+    # Инициализируем бота с кастомной сессией
+    from aiogram.client.session.aiohttp import AiohttpSession
+    bot_session = AiohttpSession(session)
+    bot = Bot(token=API_TOKEN, session=bot_session)
+    
+    storage = MemoryStorage()
+    dp = Dispatcher(bot, storage=storage)
+    
+    log_ok("✅ Бот инициализирован с оптимизированной сетевой сессией")
+except Exception as e:
+    log_error(f"❌ Ошибка инициализации бота: {e}")
+    # Пробуем стандартную инициализацию как запасной вариант
+    bot = Bot(token=API_TOKEN)
+    storage = MemoryStorage()
+    dp = Dispatcher(bot, storage=storage)
+    log_warn("⚠️ Используется стандартная инициализация бота")
 
 # ================ ФАЙЛЫ БАЗЫ ДАННЫХ ================
 USERS_FILE = "users.json"
@@ -541,33 +622,50 @@ def get_admin_kb():
 
 # ================ ОТПРАВКА ВСЕМ АДМИНАМ ================
 async def notify_all_admins(text, reply_markup=None, parse_mode="HTML"):
-    """Отправляет сообщение всем администраторам"""
+    """Отправляет сообщение всем администраторам с повторными попытками при ошибках"""
     for admin_id in ADMIN_IDS:
-        try:
-            await bot.send_message(
-                admin_id,
-                text,
-                parse_mode=parse_mode,
-                reply_markup=reply_markup
-            )
-        except Exception as e:
-            log_error(f"Ошибка отправки админу {admin_id}: {e}")
+        for attempt in range(RETRY_ATTEMPTS):
+            try:
+                await bot.send_message(
+                    admin_id,
+                    text,
+                    parse_mode=parse_mode,
+                    reply_markup=reply_markup
+                )
+                break
+            except (aiohttp.client_exceptions.ClientConnectorError, 
+                    aiohttp.client_exceptions.ServerDisconnectedError,
+                    exceptions.NetworkError) as e:
+                if attempt < RETRY_ATTEMPTS - 1:
+                    wait_time = RETRY_DELAY * (attempt + 1)
+                    log_warn(f"Ошибка отправки админу {admin_id}, попытка {attempt + 2} через {wait_time}с: {e}")
+                    await asyncio.sleep(wait_time)
+                else:
+                    log_error(f"Не удалось отправить админу {admin_id} после {RETRY_ATTEMPTS} попыток: {e}")
+            except Exception as e:
+                log_error(f"Ошибка отправки админу {admin_id}: {e}")
+                break
 
 async def send_media_to_all_admins(media_type, file_id, caption, reply_markup=None):
-    """Отправляет медиафайл всем администраторам"""
+    """Отправляет медиафайл всем администраторам с повторными попытками"""
     for admin_id in ADMIN_IDS:
-        try:
-            if media_type == "photo":
-                await bot.send_photo(admin_id, file_id, caption=caption, parse_mode="HTML", reply_markup=reply_markup)
-            elif media_type == "video":
-                await bot.send_video(admin_id, file_id, caption=caption, parse_mode="HTML", reply_markup=reply_markup)
-            elif media_type == "voice":
-                await bot.send_voice(admin_id, file_id, reply_markup=reply_markup)
-                await bot.send_message(admin_id, caption, parse_mode="HTML")
-            elif media_type == "document":
-                await bot.send_document(admin_id, file_id, caption=caption, parse_mode="HTML", reply_markup=reply_markup)
-        except Exception as e:
-            log_error(f"Ошибка отправки медиа админу {admin_id}: {e}")
+        for attempt in range(RETRY_ATTEMPTS):
+            try:
+                if media_type == "photo":
+                    await bot.send_photo(admin_id, file_id, caption=caption, parse_mode="HTML", reply_markup=reply_markup)
+                elif media_type == "video":
+                    await bot.send_video(admin_id, file_id, caption=caption, parse_mode="HTML", reply_markup=reply_markup)
+                elif media_type == "voice":
+                    await bot.send_voice(admin_id, file_id, reply_markup=reply_markup)
+                    await bot.send_message(admin_id, caption, parse_mode="HTML")
+                elif media_type == "document":
+                    await bot.send_document(admin_id, file_id, caption=caption, parse_mode="HTML", reply_markup=reply_markup)
+                break
+            except Exception as e:
+                if attempt < RETRY_ATTEMPTS - 1:
+                    await asyncio.sleep(RETRY_DELAY * (attempt + 1))
+                else:
+                    log_error(f"Ошибка отправки медиа админу {admin_id}: {e}")
 
 # ================ ХРАНИЛИЩА ================
 user_section = {}      # Текущий раздел пользователя
@@ -1286,47 +1384,62 @@ async def send_newsletter(callback_query: types.CallbackQuery, state: FSMContext
     newsletter_copy['failed_count'] = 0
 
     for user in users:
-        try:
-            if 'photo' in newsletter_data:
-                await bot.send_photo(
-                    user["id"],
-                    newsletter_data['photo'],
-                    caption=newsletter_data.get('caption', '')
-                )
-            else:
-                await bot.send_message(
-                    user["id"],
-                    newsletter_data['text']
-                )
-            sent += 1
-            await asyncio.sleep(0.05)
-            
-            # Обновление прогресса каждые 5 пользователей с прогресс-баром
-            if sent % 5 == 0:
-                try:
-                    progress = int((sent / len(users)) * 100)
-                    bar = "█" * (progress // 5) + "░" * (20 - progress // 5)
-                    await status_msg.edit_text(
-                        f"📤 <b>Отправка рассылки</b>\n\n"
-                        f"[{bar}] {progress}%\n\n"
-                        f"✅ Отправлено: {sent}/{len(users)}\n"
-                        f"❌ Ошибок: {failed}",
-                        parse_mode="HTML"
+        for attempt in range(RETRY_ATTEMPTS):
+            try:
+                if 'photo' in newsletter_data:
+                    await bot.send_photo(
+                        user["id"],
+                        newsletter_data['photo'],
+                        caption=newsletter_data.get('caption', '')
                     )
-                except:
-                    pass
-                    
-        except exceptions.BotBlocked:
-            failed += 1
-            log_warn(f"Пользователь {user['id']} заблокировал бота")
-        except exceptions.UserDeactivated:
-            failed += 1
-            log_warn(f"Пользователь {user['id']} удалил аккаунт")
-        except exceptions.ChatNotFound:
-            failed += 1
-        except Exception as e:
-            failed += 1
-            log_error(f"Ошибка отправки {user['id']}: {e}")
+                else:
+                    await bot.send_message(
+                        user["id"],
+                        newsletter_data['text']
+                    )
+                sent += 1
+                await asyncio.sleep(0.05)
+                break
+                
+            except exceptions.BotBlocked:
+                failed += 1
+                log_warn(f"Пользователь {user['id']} заблокировал бота")
+                break
+            except exceptions.UserDeactivated:
+                failed += 1
+                log_warn(f"Пользователь {user['id']} удалил аккаунт")
+                break
+            except exceptions.ChatNotFound:
+                failed += 1
+                break
+            except (aiohttp.client_exceptions.ClientConnectorError, 
+                    aiohttp.client_exceptions.ServerDisconnectedError) as e:
+                if attempt < RETRY_ATTEMPTS - 1:
+                    wait_time = RETRY_DELAY * (attempt + 1)
+                    log_warn(f"Сетевая ошибка для {user['id']}, попытка {attempt + 2} через {wait_time}с")
+                    await asyncio.sleep(wait_time)
+                else:
+                    failed += 1
+                    log_error(f"Не удалось отправить {user['id']} после {RETRY_ATTEMPTS} попыток")
+            except Exception as e:
+                failed += 1
+                log_error(f"Ошибка отправки {user['id']}: {e}")
+                break
+        
+        # Обновление прогресса каждые 5 пользователей с прогресс-баром
+        if sent % 5 == 0:
+            try:
+                progress = int((sent / len(users)) * 100)
+                bar = "█" * (progress // 5) + "░" * (20 - progress // 5)
+                await status_msg.edit_text(
+                    f"📤 <b>Отправка рассылки</b>\n\n"
+                    f"[{bar}] {progress}%\n\n"
+                    f"✅ Отправлено: {sent}/{len(users)}\n"
+                    f"❌ Ошибок: {failed}",
+                    parse_mode="HTML"
+                )
+            except:
+                pass
 
     newsletter_copy['sent_count'] = sent
     newsletter_copy['failed_count'] = failed
@@ -2421,11 +2534,14 @@ async def start_bot_with_retry():
             log_info(f"Попытка запуска #{retries + 1}...")
             await bot.delete_webhook(drop_pending_updates=True)
             
-            await asyncio.gather(
+            # Создаём задачи для параллельного выполнения
+            tasks = [
                 dp.start_polling(),
                 run_web_server(),
                 auto_control()
-            )
+            ]
+            
+            await asyncio.gather(*tasks)
             break
 
         except (aiohttp.client_exceptions.ClientConnectorError, 
@@ -2434,6 +2550,19 @@ async def start_bot_with_retry():
             retries += 1
             wait_time = base_delay * (2 ** (retries - 1))
             log_warn(f"Ошибка сети: {e}. Повтор через {wait_time} сек (попытка {retries}/{max_retries})")
+            
+            # Пересоздаём сессию при ошибке сети
+            try:
+                if hasattr(bot, 'session') and bot.session:
+                    await bot.session.close()
+            except:
+                pass
+            
+            # Создаём новую сессию
+            new_session = create_optimized_session()
+            from aiogram.client.session.aiohttp import AiohttpSession
+            bot._session = AiohttpSession(new_session)
+            
             await asyncio.sleep(wait_time)
 
         except exceptions.RetryAfter as e:
@@ -2446,6 +2575,18 @@ async def start_bot_with_retry():
                 retries += 1
                 wait_time = base_delay * (2 ** (retries - 1))
                 log_warn(f"Ошибка шлюза (Bad Gateway): {e}. Повтор через {wait_time} сек")
+                
+                # Пересоздаём сессию
+                try:
+                    if hasattr(bot, 'session') and bot.session:
+                        await bot.session.close()
+                except:
+                    pass
+                
+                new_session = create_optimized_session()
+                from aiogram.client.session.aiohttp import AiohttpSession
+                bot._session = AiohttpSession(new_session)
+                
                 await asyncio.sleep(wait_time)
             else:
                 raise e
@@ -2494,7 +2635,10 @@ if __name__ == "__main__":
         log_info(f"🕐 Текущее время: {get_local_time().strftime('%d.%m.%Y %H:%M')}")
         log_info(f"📊 Статус: {'Рабочее время' if is_working_hours() else 'Нерабочее время'}")
         log_info("=" * 50)
+        
+        # Запускаем бота
         asyncio.run(start_bot_with_retry())
+        
     except KeyboardInterrupt:
         log_info("Бот остановлен")
     except Exception as e:
