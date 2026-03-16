@@ -2402,10 +2402,10 @@ async def start_bot_with_retry():
             await bot.delete_webhook(drop_pending_updates=True)
             
             await asyncio.gather(
-                dp.start_polling(timeout=30, skip_updates=True),
-                run_web_server(),
-                auto_control()
-            )
+    dp.start_polling(),
+    run_web_server(),
+    auto_control()
+)
             break
 
         except (aiohttp.client_exceptions.ClientConnectorError, 
