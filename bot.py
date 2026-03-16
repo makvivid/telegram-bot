@@ -12,7 +12,7 @@ from aiogram.dispatcher.filters import Text
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, InputFile
 from aiogram.dispatcher.filters.state import State, StatesGroup
 from aiogram.utils import exceptions
-from aiohttp import web
+from aiohttp import web, ClientTimeout
 from datetime import datetime, timedelta
 import aiohttp
 
@@ -116,7 +116,11 @@ def get_working_hours_message():
 if not API_TOKEN:
     raise ValueError("ERROR: BOT_TOKEN not set!")
 
-bot = Bot(token=API_TOKEN)
+# ================ СОЗДАНИЕ БОТА С ТАЙМАУТОМ ================
+bot = Bot(
+    token=API_TOKEN,
+    timeout=ClientTimeout(total=10)  # 10 секунд максимум на любой запрос
+)
 storage = MemoryStorage()
 dp = Dispatcher(bot, storage=storage)
 
@@ -339,40 +343,19 @@ class ReviewStates(StatesGroup):
     waiting_for_rating = State()
     waiting_for_text = State()
 
-# ================ ЛОГОТИП ================
-LOGO_PATH = "logo.png"
-
+# ================ ОТПРАВКА СООБЩЕНИЯ (БЕЗ ЛОГОТИПА) ================
 async def send_logo(chat_id, caption, reply_markup=None, parse_mode="HTML"):
-    """Отправляет логотип с текстом или просто текст, если логотипа нет"""
+    """Отправляет текстовое сообщение (без логотипа для скорости)"""
     try:
-        if os.path.exists(LOGO_PATH):
-            with open(LOGO_PATH, 'rb') as photo:
-                await bot.send_photo(
-                    chat_id=chat_id,
-                    photo=InputFile(photo),
-                    caption=caption,
-                    reply_markup=reply_markup,
-                    parse_mode=parse_mode
-                )
-        else:
-            await bot.send_message(
-                chat_id=chat_id,
-                text=caption,
-                reply_markup=reply_markup,
-                parse_mode=parse_mode
-            )
+        await bot.send_message(
+            chat_id=chat_id,
+            text=caption,
+            reply_markup=reply_markup,
+            parse_mode=parse_mode
+        )
         return True
     except Exception as e:
-        log_error(f"Ошибка логотипа: {e}")
-        try:
-            await bot.send_message(
-                chat_id=chat_id,
-                text=caption,
-                reply_markup=reply_markup,
-                parse_mode=parse_mode
-            )
-        except:
-            pass
+        log_error(f"Ошибка отправки: {e}")
         return False
 
 # ================ ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ================
@@ -2422,7 +2405,7 @@ async def start_bot_with_retry():
             await bot.delete_webhook(drop_pending_updates=True)
             
             await asyncio.gather(
-                dp.start_polling(),
+                dp.start_polling(timeout=30, skip_updates=True),
                 run_web_server(),
                 auto_control()
             )
